@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.cardview.widget.CardView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginVertical="8dp"
+    app:cardCornerRadius="28dp"
+    app:cardElevation="0dp"
+    app:cardBackgroundColor="@android:color/white"
+    android:clickable="true"
+    android:focusable="true"
+    android:foreground="?attr/selectableItemBackground">
+
+    <RelativeLayout
+        android:id="@+id/alarmCard"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingVertical="22dp"
+        android:paddingStart="24dp"
+        android:paddingEnd="20dp">
+
+        <!-- Left side: time info -->
+        <LinearLayout
+            android:id="@+id/infoContainer"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_alignParentStart="true"
+            android:layout_toStartOf="@+id/rightContainer"
+            android:orientation="vertical">
+
+            <!-- Time + AM/PM row -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="bottom">
+
+                <TextView
+                    android:id="@+id/tvItemTime"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="08:00"
+                    android:textColor="#FF1A1A1A"
+                    android:textSize="42sp" />
+
+                <TextView
+                    android:id="@+id/tvItemAmPm"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:layout_marginBottom="6dp"
+                    android:text="上午"
+                    android:textColor="#FF666666"
+                    android:textSize="16sp" />
+            </LinearLayout>
+
+            <!-- Repeat / note info -->
+            <TextView
+                android:id="@+id/tvItemInfo"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="每40天 | 20小时24分钟后响铃"
+                android:textColor="#FF9A9A9A"
+                android:textSize="15sp" />
+        </LinearLayout>
+
+        <!-- Right side container: switch + delete button -->
+        <LinearLayout
+            android:id="@+id/rightContainer"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:orientation="vertical"
+            android:gravity="center_horizontal">
+
+            <!-- Switch -->
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/switchItemEnabled"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="false"
+                android:switchMinWidth="56dp"
+                app:thumbTint="@color/switch_thumb_tint"
+                app:trackTint="@color/switch_track_tint" />
+        </LinearLayout>
+    </RelativeLayout>
+
+</androidx.cardview.widget.CardView>
