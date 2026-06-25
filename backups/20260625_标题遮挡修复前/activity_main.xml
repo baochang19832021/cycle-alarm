@@ -18,7 +18,7 @@
 
         <RelativeLayout
             android:layout_width="match_parent"
-            android:layout_height="148dp"
+            android:layout_height="138dp"
             android:background="#FFF7F7F7"
             android:paddingStart="0dp"
             android:paddingEnd="28dp"
@@ -46,7 +46,8 @@
                 android:layout_marginStart="44dp"
                 android:text="闹钟"
                 android:textColor="#FF1A1A1A"
-                android:textSize="36sp" />
+                android:textSize="36sp"
+                android:translationY="10dp" />
 
             <TextView
                 android:id="@+id/btnDoneDeleteMode"

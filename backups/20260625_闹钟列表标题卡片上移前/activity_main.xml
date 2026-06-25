@@ -18,12 +18,12 @@
 
         <RelativeLayout
             android:layout_width="match_parent"
-            android:layout_height="148dp"
+            android:layout_height="166dp"
             android:background="#FFF7F7F7"
             android:paddingStart="0dp"
             android:paddingEnd="28dp"
             android:paddingTop="32dp"
-            android:paddingBottom="12dp">
+            android:paddingBottom="18dp">
 
             <ImageButton
                 android:id="@+id/btnBackToHome"

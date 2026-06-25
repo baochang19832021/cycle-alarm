@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Cycle arrows -->
+    <path
+        android:pathData="M38.5,35.8A24,24 0,0 1,68.5 35.8"
+        android:strokeWidth="5"
+        android:strokeColor="@color/accent"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent" />
+    <path
+        android:fillColor="@color/accent"
+        android:pathData="M68.5,35.8L61.8,34.5L66.2,41.2z" />
+
+    <path
+        android:pathData="M77.5,51.5A24,24 0,0 1,62.5 77.5"
+        android:strokeWidth="5"
+        android:strokeColor="@color/accent"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent" />
+    <path
+        android:fillColor="@color/accent"
+        android:pathData="M62.5,77.5L68.2,73.8L60.4,70.9z" />
+
+    <path
+        android:pathData="M45.5,77.5A24,24 0,0 1,30.5 51.5"
+        android:strokeWidth="5"
+        android:strokeColor="@color/accent"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent" />
+    <path
+        android:fillColor="@color/accent"
+        android:pathData="M30.5,51.5L33.4,57.6L37.8,50.5z" />
+
+    <!-- Clock hands -->
+    <path
+        android:fillColor="@color/accent"
+        android:pathData="M52.2,54L52.2,42L55.8,42L55.8,54L64,60L62,63.5L52.2,54z"/>
+</vector>

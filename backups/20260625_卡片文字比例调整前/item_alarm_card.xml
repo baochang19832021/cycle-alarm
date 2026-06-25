@@ -42,7 +42,7 @@
                     android:layout_height="wrap_content"
                     android:text="08:00"
                     android:textColor="#FF1A1A1A"
-                    android:textSize="34sp"
+                    android:textSize="36sp"
                     android:textStyle="bold" />
 
                 <TextView
@@ -64,7 +64,7 @@
                 android:layout_marginTop="2dp"
                 android:text="每40天 | 20小时24分钟后响铃"
                 android:textColor="#FF9A9A9A"
-                android:textSize="16sp" />
+                android:textSize="14sp" />
         </LinearLayout>
 
         <!-- Right side container: switch + delete button -->

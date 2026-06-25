@@ -12,10 +12,7 @@
 
     <!-- Circle FAB shape -->
     <style name="FabCircle" parent="Widget.MaterialComponents.FloatingActionButton">
-        <item name="shapeAppearanceOverlay">@style/ShapeAppearance.Circle</item>
-    </style>
-
-    <style name="ShapeAppearance.Circle" parent="ShapeAppearance.MaterialComponents.SmallComponent">
+        <item name="cornerFamily">rounded</item>
         <item name="cornerSize">50%</item>
     </style>
 </resources>

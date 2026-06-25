@@ -18,35 +18,20 @@
 
         <RelativeLayout
             android:layout_width="match_parent"
-            android:layout_height="148dp"
+            android:layout_height="138dp"
             android:background="#FFF7F7F7"
-            android:paddingStart="0dp"
-            android:paddingEnd="28dp"
-            android:paddingTop="32dp"
+            android:paddingHorizontal="28dp"
+            android:paddingTop="38dp"
             android:paddingBottom="12dp">
-
-            <ImageButton
-                android:id="@+id/btnBackToHome"
-                android:layout_width="44dp"
-                android:layout_height="44dp"
-                android:layout_alignParentStart="true"
-                android:layout_alignParentTop="true"
-                android:layout_marginStart="34dp"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:contentDescription="返回主页面"
-                android:padding="4dp"
-                android:src="@drawable/ic_arrow_back"
-                android:tint="#FF1A1A1A" />
 
             <TextView
                 android:id="@+id/tvSubTitle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_alignParentBottom="true"
-                android:layout_marginStart="44dp"
                 android:text="闹钟"
                 android:textColor="#FF1A1A1A"
-                android:textSize="36sp" />
+                android:textSize="34sp" />
 
             <TextView
                 android:id="@+id/btnDoneDeleteMode"
@@ -60,7 +45,7 @@
                 android:gravity="center"
                 android:paddingHorizontal="8dp"
                 android:text="完成"
-                android:textColor="@color/accent"
+                android:textColor="#FFFF7043"
                 android:textSize="16sp"
                 android:visibility="gone" />
         </RelativeLayout>
@@ -82,13 +67,12 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|end"
-        android:layout_marginEnd="30dp"
-        android:layout_marginBottom="32dp"
+        android:layout_marginEnd="28dp"
+        android:layout_marginBottom="30dp"
         android:src="@drawable/ic_add_alarm"
-        app:backgroundTint="@color/accent"
+        app:backgroundTint="#FF7043"
         app:tint="@android:color/white"
-        app:fabCustomSize="56dp"
-        app:maxImageSize="24dp"
+        app:fabSize="normal"
         app:elevation="2dp"
         app:shapeAppearanceOverlay="@style/FabCircle" />
 

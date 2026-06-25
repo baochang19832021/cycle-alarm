@@ -178,7 +178,6 @@ class MainActivity : AppCompatActivity() {
         currentAlarmType = intent.getStringExtra(AlarmListActivity.EXTRA_TYPE)
             ?: AlarmListActivity.TYPE_INTERVAL
         findViewById<TextView>(R.id.tvSubTitle).text = "闹钟"
-        findViewById<View>(R.id.btnBackToHome).setOnClickListener { finish() }
 
         alarmListView = findViewById(R.id.rvAlarmList)
         alarmListView.layoutManager = LinearLayoutManager(this)
@@ -258,8 +257,6 @@ class MainActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.tvSubTitle).text = if (isDeleteMode) "管理闹钟" else "闹钟"
         findViewById<TextView>(R.id.btnDoneDeleteMode).visibility =
             if (isDeleteMode) View.VISIBLE else View.GONE
-        findViewById<View>(R.id.btnBackToHome).visibility =
-            if (isDeleteMode) View.GONE else View.VISIBLE
         findViewById<FloatingActionButton>(R.id.fabAddAlarm).visibility =
             if (isDeleteMode) View.GONE else View.VISIBLE
     }

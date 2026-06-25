@@ -4,6 +4,6 @@
     <color name="cardBackground">#FFFFFF</color>
     <color name="textPrimary">#FF1A1A1A</color>
     <color name="textSecondary">#FF666666</color>
-    <color name="accent">#FFFF7043</color>
+    <color name="accent">#FF3D8BFF</color>
     <color name="white">#FFFFFFFF</color>
 </resources>

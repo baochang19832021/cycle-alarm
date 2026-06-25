@@ -61,7 +61,7 @@
             android:gravity="center_vertical"
             android:paddingHorizontal="8dp"
             android:text="确定"
-            android:textColor="#FF7043"
+            android:textColor="@color/accent"
             android:textSize="16sp"
             android:textStyle="bold" />
     </RelativeLayout>
