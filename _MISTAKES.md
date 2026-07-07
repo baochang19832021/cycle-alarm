@@ -139,3 +139,23 @@
 ---
 
 *最后更新：2026-06-21（从头到尾完整整理）*
+
+---
+
+## 追加：2026-07-01 构建 / 测试环境问题
+
+### 15. 中文项目路径导致 Android Kotlin 单测运行器找不到测试类
+
+- **何时**：2026-07-01，补 P1 单元测试时。
+- **错误现象**：`compileDebugUnitTestKotlin` 成功，`AlarmTimeCalculatorTest.class` 已生成，`javap` 也能读取；但 `testDebugUnitTest` 报 `ClassNotFoundException: com.cyclealarm.app.domain.AlarmTimeCalculatorTest`。
+- **根因**：当前项目路径包含中文字符，Gradle/AGP 生成的 test worker classpath 在本地 daemon 中出现路径编码错乱，导致 Java 测试进程实际加载不到项目内 class。
+- **修复**：在 `app/build.gradle.kts` 中，测试前把 debug main/test Kotlin class 同步到用户 `.gradle` 下的 ASCII 路径，并在 `testDebugUnitTest` 执行前加入该路径到 classpath。
+- **正确做法**：保留该测试 classpath 兼容配置；如果以后把项目迁移到纯 ASCII 路径，先确认 `testDebugUnitTest` 原生通过，再考虑移除兼容配置。
+
+### 16. 误把备份 PNG 放进 Android `res` 目录导致资源合并失败
+
+- **何时**：2026-07-03，新版 Pixso 风格 APK 图标和页面细节优化后重新构建。
+- **错误现象**：一开始怀疑是 Gradle 缓存被清理；联网构建恢复插件解析后，`mergeDebugResources` 失败，报错 `app_icon_generated.backup.png` 文件名非法。
+- **根因**：Android 会把 `app/src/main/res/**` 下的文件全部当作资源处理。资源文件名只能包含小写字母、数字和下划线；`app_icon_generated.backup.png` 中间多了一个点号，且备份文件本就不应该放在 `res` 目录。
+- **修复**：把备份图标移出资源目录，放到 `backups/icons/app_icon_generated_backup.png`；`res/mipmap-*` 中只保留真正参与打包的合法资源文件。
+- **正确做法**：任何备份文件、参考图、临时图都不要放进 `app/src/main/res`；需要备份统一放到 `backups/`、`design/` 或仓库外部。新增资源文件前检查命名规则：`^[a-z0-9_]+\\.(png|xml|webp|jpg)$`。

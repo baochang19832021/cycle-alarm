@@ -1,64 +1,148 @@
-﻿package com.cyclealarm.app
+package com.cyclealarm.app
 
+import android.app.AlertDialog
+import android.app.KeyguardManager
+import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 
 class AlarmRingingActivity : AppCompatActivity() {
 
+    private var dismissCountDown = 0
+    private val handler = Handler(Looper.getMainLooper())
+    private var dismissRunnable: Runnable? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // ═══ Full-screen over lock screen (MIUI-proof) ═══
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-        }
-        // Key API for MIUI: keep screen on + show over lock screen
-        @Suppress("DEPRECATION")
-        window.addFlags(
-            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
-                    or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-                    or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-                    or WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON
-                    or WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
-        )
+        applyLockScreenWindowFlags()
 
         setContentView(R.layout.activity_alarm_ringing)
 
-        val label = intent.getStringExtra("label") ?: "给妈挂号"
+        val label = intent.getStringExtra("label") ?: "周期闹钟"
         val note = intent.getStringExtra("note") ?: ""
+        val medicineName = intent.getStringExtra(AlarmService.EXTRA_MEDICINE_NAME) ?: ""
         val alarmId = intent.getStringExtra("alarm_id")
-        // 大标题优先显示备注内容，无备注时显示 label
-        findViewById<TextView>(R.id.tvAlarmLabel).text = if (note.isNotEmpty()) note else label
+        val isTest = intent.getBooleanExtra(AlarmService.EXTRA_IS_TEST, false)
 
-        // 备注已作为大标题显示，下方备注行隐藏
+        // Show medicine name prominently if set
+        val tvLabel = findViewById<TextView>(R.id.tvAlarmLabel)
         val tvNote = findViewById<TextView>(R.id.tvAlarmNote)
-        tvNote.visibility = android.view.View.GONE
+
+        if (medicineName.isNotEmpty()) {
+            tvLabel.text = "该吃药了"
+            tvNote.text = "💊 $medicineName"
+            tvNote.visibility = android.view.View.VISIBLE
+            tvNote.setTextColor(0xFFE65100.toInt())
+            tvNote.textSize = 26f
+        } else {
+            tvLabel.text = if (note.isNotEmpty()) note else label
+            tvNote.visibility = android.view.View.GONE
+        }
 
         val now = java.text.SimpleDateFormat("HH:mm", java.util.Locale.CHINA).format(java.util.Date())
         findViewById<TextView>(R.id.tvAlarmTime).text = now
 
-        findViewById<Button>(R.id.btnDismiss).setOnClickListener {
-            AlarmService.stop(this)
-            finish()
+        // ── Long-press to dismiss (anti-accidental) ──
+        val btnDismiss = findViewById<Button>(R.id.btnDismiss)
+        var dismissing = false
+        btnDismiss.setOnClickListener {
+            if (!dismissing) {
+                dismissing = true
+                btnDismiss.text = "长按 2 秒关闭"
+                Toast.makeText(this, "请长按按钮 2 秒关闭闹钟", Toast.LENGTH_SHORT).show()
+                dismissCountDown = 0
+                dismissRunnable?.let { handler.removeCallbacks(it) }
+                dismissRunnable = object : Runnable {
+                    override fun run() {
+                        dismissCountDown++
+                        btnDismiss.text = "长按 ${3 - dismissCountDown} 秒关闭"
+                        if (dismissCountDown >= 3) {
+                            performDismiss(alarmId, medicineName, isTest)
+                        } else {
+                            handler.postDelayed(this, 800)
+                        }
+                    }
+                }
+                handler.postDelayed(dismissRunnable!!, 800)
+            }
         }
 
-        findViewById<Button>(R.id.btnSnooze).setOnClickListener {
-            // Snooze 5 minutes for the same alarm
+        val btnSnooze = findViewById<Button>(R.id.btnSnooze)
+        btnSnooze.visibility = if (isTest) android.view.View.GONE else android.view.View.VISIBLE
+        // Read user-configured snooze interval (default 5 minutes)
+        val snoozeMs = getSharedPreferences("pixso_ui_alarm_state", Context.MODE_PRIVATE)
+            .getInt("snoozeMinutes", 5) * 60 * 1000L
+
+        btnSnooze.setOnClickListener {
             alarmId?.let { id ->
-                AlarmScheduler.scheduleSnooze(this, id, System.currentTimeMillis() + 5 * 60 * 1000)
+                AlarmScheduler.scheduleSnooze(this, id, System.currentTimeMillis() + snoozeMs)
             }
             AlarmService.stop(this, shouldReschedule = false)
             finish()
         }
+    }
 
+    private fun performDismiss(alarmId: String?, medicineName: String, isTest: Boolean) {
+        AlarmService.stop(this, shouldReschedule = !isTest && !alarmId.isNullOrEmpty())
+
+        // Medicine confirmation dialog
+        if (medicineName.isNotEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("服药确认")
+                .setMessage("已服用 $medicineName 了吗？")
+                .setPositiveButton("已服药") { _, _ ->
+                    Toast.makeText(this, "已记录服药", Toast.LENGTH_SHORT).show()
+                    finish()
+                }
+                .setNegativeButton("稍后") { _, _ -> finish() }
+                .setCancelable(false)
+                .show()
+        } else {
+            finish()
+        }
     }
 
     override fun onBackPressed() {
-        // Don't dismiss by back button — must press the button
+        // Don't dismiss by back button; use the on-screen action.
+    }
+
+    override fun onResume() {
+        super.onResume()
+        applyLockScreenWindowFlags()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyLockScreenWindowFlags()
+    }
+
+    private fun applyLockScreenWindowFlags() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+            keyguardManager.requestDismissKeyguard(this, null)
+        }
+
+        @Suppress("DEPRECATION")
+        window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
+        @Suppress("DEPRECATION")
+        window.addFlags(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        @Suppress("DEPRECATION")
+        window.addFlags(WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON)
+        @Suppress("DEPRECATION")
+        window.addFlags(WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD)
+        window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
     }
 }

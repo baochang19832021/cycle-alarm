@@ -1,3 +1,5 @@
+import java.io.File
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,14 +7,14 @@ plugins {
 
 android {
     namespace = "com.cyclealarm.app"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.cyclealarm.app"
         minSdk = 21
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        targetSdk = 35
+        versionCode = 15
+        versionName = "1.0.14"
     }
 
     buildTypes {
@@ -33,7 +35,30 @@ android {
     }
 }
 
+val asciiDebugUnitTestClassesDir = File(
+    System.getProperty("user.home"),
+    ".gradle/cyclealarm-test-classes/HospitalAlarm/debugUnitTest"
+)
+
+val syncDebugUnitTestClassesToAscii by tasks.registering(org.gradle.api.tasks.Copy::class) {
+    from(layout.buildDirectory.dir("tmp/kotlin-classes/debug"))
+    from(layout.buildDirectory.dir("tmp/kotlin-classes/debugUnitTest"))
+    into(asciiDebugUnitTestClassesDir)
+    dependsOn("compileDebugKotlin")
+    dependsOn("compileDebugUnitTestKotlin")
+}
+
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    if (name == "testDebugUnitTest") {
+        dependsOn(syncDebugUnitTestClassesToAscii)
+        doFirst {
+            classpath += files(asciiDebugUnitTestClassesDir)
+        }
+    }
+}
+
 dependencies {
+    implementation(project(":domain"))
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
@@ -41,4 +66,5 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
     implementation("androidx.preference:preference-ktx:1.2.1")
+    testImplementation("junit:junit:4.13.2")
 }

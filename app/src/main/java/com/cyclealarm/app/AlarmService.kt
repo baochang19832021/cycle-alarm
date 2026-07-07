@@ -1,21 +1,32 @@
-﻿package com.cyclealarm.app
+package com.cyclealarm.app
 
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.telephony.PhoneStateListener
+import android.telephony.TelephonyManager
 import androidx.core.app.NotificationCompat
 
 class AlarmService : Service() {
@@ -29,23 +40,30 @@ class AlarmService : Service() {
         const val EXTRA_ALARM_ID = "alarm_id"
         const val EXTRA_VIBRATE = "vibrate"
         const val EXTRA_RESCHEDULE = "reschedule"
-        const val CHANNEL_ID = "cycle_alarm_foreground"
+        const val EXTRA_IS_TEST = "is_test_alarm"
+        const val EXTRA_MEDICINE_NAME = "medicine_name"
+        const val CHANNEL_ID = "cycle_alarm_full_screen_v2"
         const val NOTIFICATION_ID = 2001
+        const val FIRED_NOTIFICATION_ID = 1001
 
         fun start(
             context: Context,
             label: String,
             ringtone: String?,
             note: String = "",
+            medicineName: String = "",
             alarmId: String? = null,
-            vibrate: Boolean = true
+            vibrate: Boolean = true,
+            isTest: Boolean = false
         ) {
             val intent = Intent(context, AlarmService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_LABEL, label)
                 putExtra(EXTRA_RINGTONE, ringtone)
                 putExtra(EXTRA_NOTE, note)
+                putExtra(EXTRA_MEDICINE_NAME, medicineName)
                 putExtra(EXTRA_VIBRATE, vibrate)
+                putExtra(EXTRA_IS_TEST, isTest)
                 if (alarmId != null) putExtra(EXTRA_ALARM_ID, alarmId)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -67,7 +85,19 @@ class AlarmService : Service() {
     private var mediaPlayer: MediaPlayer? = null
     private var vibrator: Vibrator? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var screenWakeLock: PowerManager.WakeLock? = null
     private var currentAlarmId: String? = null
+    private var currentIsTest: Boolean = false
+    private var currentMedName: String = ""
+    private var tts: TextToSpeech? = null
+    private var audioManager: AudioManager? = null
+    private var volumeHandler: Handler? = null
+    private var volumeRunnable: Runnable? = null
+    private var timeoutHandler: Handler? = null
+    private var timeoutRunnable: Runnable? = null
+    private var phoneStateListener: PhoneStateListener? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var hasAudioFocus: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
@@ -80,37 +110,68 @@ class AlarmService : Service() {
             return START_NOT_STICKY
         }
 
-        val label = intent?.getStringExtra(EXTRA_LABEL) ?: "给妈挂号"
+        val label = intent?.getStringExtra(EXTRA_LABEL) ?: "周期闹钟"
         val ringtone = intent?.getStringExtra(EXTRA_RINGTONE)
         val note = intent?.getStringExtra(EXTRA_NOTE) ?: ""
+        val medicineName = intent?.getStringExtra(EXTRA_MEDICINE_NAME) ?: ""
         val alarmId = intent?.getStringExtra(EXTRA_ALARM_ID)
+        currentMedName = medicineName
+        val isTest = intent?.getBooleanExtra(EXTRA_IS_TEST, false) == true
         cleanup()
         currentAlarmId = alarmId
+        currentIsTest = isTest
 
-        // Acquire wake lock to keep CPU alive
         val powerMgr = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerMgr.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             "CycleAlarm::AlarmWakeLock"
         ).apply {
-            acquire(5 * 60 * 1000L) // max 5 minutes
+            acquire(5 * 60 * 1000L)
+        }
+        @Suppress("DEPRECATION")
+        screenWakeLock = powerMgr.newWakeLock(
+            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                PowerManager.ON_AFTER_RELEASE,
+            "CycleAlarm::ScreenWakeLock"
+        ).apply {
+            acquire(15 * 1000L)
         }
 
-        // Start as foreground service first (must be called within 5s)
-        startForeground(NOTIFICATION_ID, buildNotification(label))
+        startForeground(NOTIFICATION_ID, buildNotification(label, note, alarmId, isTest))
 
-        // Launch full-screen ringing activity
         val ringingIntent = Intent(this, AlarmRingingActivity::class.java).apply {
             putExtra(EXTRA_LABEL, label)
             putExtra(EXTRA_NOTE, note)
+            putExtra(EXTRA_MEDICINE_NAME, medicineName)
+            putExtra(EXTRA_IS_TEST, isTest)
             if (alarmId != null) putExtra(EXTRA_ALARM_ID, alarmId)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
-        startActivity(ringingIntent)
+        try {
+            startActivity(ringingIntent)
+        } catch (_: ActivityNotFoundException) {
+            // Full-screen notification remains the primary fallback path.
+        } catch (_: SecurityException) {
+            // Some ROMs block background activity launches while locked.
+        }
 
-        // Start ringing
+        // Request audio focus so we can duck music/video playback
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        requestAudioFocus()
+
         startRingtone(ringtone)
         if (intent?.getBooleanExtra(EXTRA_VIBRATE, true) != false) startVibration()
+        if (medicineName.isNotEmpty()) speakMedicineName(medicineName)
+
+        // ── Rising volume: 20% → 100% over ~30 seconds ──
+        startRisingVolume()
+
+        // ── Auto-stop after 10 minutes (keep notification) ──
+        startAutoTimeout(alarmId, isTest)
+
+        // ── Phone state listener: mute on incoming call ──
+        registerPhoneStateListener()
 
         return START_STICKY
     }
@@ -122,32 +183,40 @@ class AlarmService : Service() {
         cleanup()
     }
 
-    private fun startRingtone(ringtonePath: String?) {
-        try {
-            val uri = if (!ringtonePath.isNullOrEmpty()) {
-                Uri.parse(ringtonePath)
-            } else {
-                android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_ALARM)
+    private fun speakMedicineName(name: String) {
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts?.language = java.util.Locale.CHINESE
+                val utteranceId = "med_${System.currentTimeMillis()}"
+                // Speak: "该吃 [药名] 了"
+                val text = "该吃${name}了"
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+                } else {
+                    @Suppress("DEPRECATION")
+                    tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null)
+                }
             }
+        }
+    }
 
-            mediaPlayer = MediaPlayer().apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ALARM)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                )
-                setDataSource(this@AlarmService, uri)
-                isLooping = true
-                setWakeMode(this@AlarmService, PowerManager.PARTIAL_WAKE_LOCK)
-                prepare()
-                start()
+    private fun startRingtone(ringtonePath: String?) {
+        val candidates = mutableListOf<Uri>()
+        if (!ringtonePath.isNullOrEmpty()) {
+            candidates += Uri.parse(ringtonePath)
+        }
+        listOf(
+            RingtoneManager.TYPE_ALARM,
+            RingtoneManager.TYPE_NOTIFICATION,
+            RingtoneManager.TYPE_RINGTONE
+        ).forEach { type ->
+            RingtoneManager.getDefaultUri(type)?.let { uri ->
+                if (!candidates.contains(uri)) candidates += uri
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            // Fallback: try system default
+        }
+
+        for (uri in candidates) {
             try {
-                val defaultUri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_ALARM)
                 mediaPlayer = MediaPlayer().apply {
                     setAudioAttributes(
                         AudioAttributes.Builder()
@@ -155,14 +224,21 @@ class AlarmService : Service() {
                             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                             .build()
                     )
-                    setDataSource(this@AlarmService, defaultUri)
+                    setDataSource(this@AlarmService, uri)
                     isLooping = true
+                    // Start quiet — rising volume will handle the rest
+                    setVolume(0.2f, 0.2f)
                     setWakeMode(this@AlarmService, PowerManager.PARTIAL_WAKE_LOCK)
                     prepare()
                     start()
                 }
-            } catch (e2: Exception) {
-                e2.printStackTrace()
+                return
+            } catch (e: Exception) {
+                try {
+                    mediaPlayer?.release()
+                } catch (_: Exception) {}
+                mediaPlayer = null
+                e.printStackTrace()
             }
         }
     }
@@ -184,7 +260,104 @@ class AlarmService : Service() {
         }
     }
 
-    private fun buildNotification(label: String): Notification {
+    // ── Audio focus: duck music/video when alarm rings ──
+    private fun requestAudioFocus() {
+        val am = audioManager ?: return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ALARM)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build()
+                    )
+                    .setOnAudioFocusChangeListener { focusChange ->
+                        if (focusChange == AudioManager.AUDIOFOCUS_LOSS) {
+                            mediaPlayer?.setVolume(0.5f, 0.5f)
+                        }
+                    }
+                    .build()
+                hasAudioFocus = am.requestAudioFocus(audioFocusRequest!!) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            } else {
+                @Suppress("DEPRECATION")
+                hasAudioFocus = am.requestAudioFocus(
+                    { focusChange ->
+                        if (focusChange == AudioManager.AUDIOFOCUS_LOSS) {
+                            mediaPlayer?.setVolume(0.5f, 0.5f)
+                        }
+                    },
+                    AudioManager.STREAM_ALARM,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            }
+        } catch (_: Exception) {
+            // Audio focus is best-effort; failure must not crash
+        }
+    }
+
+    // ── Rising volume: 0.2 → 1.0 over ~30 seconds ──
+    private fun startRisingVolume() {
+        volumeHandler = Handler(Looper.getMainLooper())
+        volumeRunnable = object : Runnable {
+            var step = 0
+            override fun run() {
+                val player = mediaPlayer ?: return
+                val vol = (0.2f + step * 0.0533f).coerceAtMost(1f)
+                try { player.setVolume(vol, vol) } catch (_: Exception) {}
+                step++
+                if (step <= 15) {
+                    volumeHandler?.postDelayed(this, 2000L)
+                }
+            }
+        }
+        volumeHandler?.postDelayed(volumeRunnable!!, 2000L)
+    }
+
+    // ── Auto-timeout: stop ringing after 10 minutes, keep notification ──
+    private fun startAutoTimeout(alarmId: String?, isTest: Boolean) {
+        timeoutHandler = Handler(Looper.getMainLooper())
+        timeoutRunnable = Runnable {
+            try {
+                mediaPlayer?.apply { if (isPlaying) stop() }
+                vibrator?.cancel()
+            } catch (_: Exception) {}
+            // Don't call stopAlarm() — keep the notification visible
+        }
+        timeoutHandler?.postDelayed(timeoutRunnable!!, 10 * 60 * 1000L)
+    }
+
+    // ── Phone state: mute alarm during incoming calls ──
+    @Suppress("DEPRECATION")
+    private fun registerPhoneStateListener() {
+        try {
+            val tm = getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager ?: return
+            phoneStateListener = object : PhoneStateListener() {
+                override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                    if (state == TelephonyManager.CALL_STATE_RINGING) {
+                        try {
+                            mediaPlayer?.setVolume(0f, 0f)
+                        } catch (_: Exception) {}
+                    } else if (state == TelephonyManager.CALL_STATE_IDLE) {
+                        try {
+                            // Restore volume when call ends
+                            mediaPlayer?.setVolume(1f, 1f)
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+            tm.listen(phoneStateListener!!, PhoneStateListener.LISTEN_CALL_STATE)
+        } catch (_: Exception) {
+            // Phone state requires READ_PHONE_STATE on older APIs; best-effort
+        }
+    }
+
+    private fun buildNotification(
+        label: String,
+        note: String,
+        alarmId: String?,
+        isTest: Boolean
+    ): Notification {
         val stopIntent = Intent(this, AlarmService::class.java).apply {
             action = ACTION_STOP
         }
@@ -193,7 +366,13 @@ class AlarmService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        val launchIntent = Intent(this, AlarmRingingActivity::class.java).apply {
+            putExtra(EXTRA_LABEL, label)
+            putExtra(EXTRA_NOTE, note)
+            putExtra(EXTRA_IS_TEST, isTest)
+            if (alarmId != null) putExtra(EXTRA_ALARM_ID, alarmId)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
         val contentPi = PendingIntent.getActivity(
             this, 1, launchIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -201,13 +380,15 @@ class AlarmService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-            .setContentTitle("⏰ 该挂号了！")
-            .setContentText(label)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentTitle(if (isTest) "测试响铃" else "周期闹钟响铃")
+            .setContentText(if (note.isNotEmpty()) note else label)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
+            .setOnlyAlertOnce(false)
             .setContentIntent(contentPi)
+            .setFullScreenIntent(contentPi, true)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "关闭闹钟", stopPi)
             .build()
     }
@@ -219,9 +400,12 @@ class AlarmService : Service() {
                 "闹钟响铃",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "挂号闹钟响铃通知"
+                description = "周期闹钟全屏响铃通知"
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
                 setSound(null, null)
                 enableVibration(true)
+                enableLights(true)
+                setBypassDnd(true)
             }
             val nm = getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(channel)
@@ -230,6 +414,7 @@ class AlarmService : Service() {
 
     private fun stopAlarm(shouldReschedule: Boolean) {
         cleanup()
+        clearAlarmNotifications()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -238,12 +423,19 @@ class AlarmService : Service() {
         }
         stopSelf()
 
-        // Reschedule next cycle for this specific alarm
-        if (shouldReschedule && currentAlarmId != null) {
+        if (shouldReschedule && currentAlarmId != null && !currentIsTest) {
             AlarmScheduler.rescheduleNext(this, currentAlarmId!!)
-        } else if (shouldReschedule) {
+        } else if (shouldReschedule && !currentIsTest) {
             AlarmScheduler.rescheduleNext(this)
         }
+    }
+
+    private fun clearAlarmNotifications() {
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(FIRED_NOTIFICATION_ID)
+            nm.cancel(NOTIFICATION_ID)
+        } catch (_: Exception) {}
     }
 
     private fun cleanup() {
@@ -265,6 +457,50 @@ class AlarmService : Service() {
                 if (isHeld) release()
             }
             wakeLock = null
+        } catch (_: Exception) {}
+
+        try {
+            screenWakeLock?.apply {
+                if (isHeld) release()
+            }
+            screenWakeLock = null
+        } catch (_: Exception) {}
+
+        try {
+            tts?.stop()
+            tts?.shutdown()
+            tts = null
+        } catch (_: Exception) {}
+
+        try {
+            volumeRunnable?.let { volumeHandler?.removeCallbacks(it) }
+            volumeHandler = null
+            volumeRunnable = null
+        } catch (_: Exception) {}
+
+        try {
+            timeoutRunnable?.let { timeoutHandler?.removeCallbacks(it) }
+            timeoutHandler = null
+            timeoutRunnable = null
+        } catch (_: Exception) {}
+
+        try {
+            hasAudioFocus = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                audioFocusRequest?.let { audioManager?.abandonAudioFocusRequest(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager?.abandonAudioFocus(null)
+            }
+        } catch (_: Exception) {}
+
+        try {
+            @Suppress("DEPRECATION")
+            phoneStateListener?.let {
+                val tm = getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+                tm?.listen(it, PhoneStateListener.LISTEN_NONE)
+            }
+            phoneStateListener = null
         } catch (_: Exception) {}
     }
 }

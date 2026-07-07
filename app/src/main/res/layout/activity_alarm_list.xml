@@ -39,6 +39,53 @@
                     android:textSize="36sp" />
             </RelativeLayout>
 
+            <LinearLayout
+                android:id="@+id/cardReliabilityCheck"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="20dp"
+                android:layout_marginEnd="20dp"
+                android:layout_marginBottom="10dp"
+                android:gravity="center_vertical"
+                android:minHeight="54dp"
+                android:orientation="horizontal"
+                android:paddingStart="4dp"
+                android:paddingEnd="0dp">
+
+                <TextView
+                    android:layout_width="28dp"
+                    android:layout_height="28dp"
+                    android:gravity="center"
+                    android:text="!"
+                    android:textColor="#FFE54942"
+                    android:textSize="22sp" />
+
+                <TextView
+                    android:id="@+id/tvReliabilityStatus"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:text="闹钟准时响起需要开启对应权限"
+                    android:textColor="#FFE54942"
+                    android:textSize="15sp" />
+
+                <Button
+                    android:id="@+id/btnReliabilitySettings"
+                    android:layout_width="92dp"
+                    android:layout_height="42dp"
+                    android:backgroundTint="#FF3D8BFF"
+                    android:includeFontPadding="false"
+                    android:minHeight="0dp"
+                    android:minWidth="0dp"
+                    android:paddingStart="0dp"
+                    android:paddingEnd="0dp"
+                    android:text="去设置"
+                    android:textAllCaps="false"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="15sp" />
+            </LinearLayout>
+
             <!-- 功能列表，垂直单列 -->
             <androidx.recyclerview.widget.RecyclerView
                 android:id="@+id/rvFunctionGrid"

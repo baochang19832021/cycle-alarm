@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "HospitalAlarm"
 include(":app")
+include(":domain")

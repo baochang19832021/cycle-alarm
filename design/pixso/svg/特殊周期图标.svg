@@ -1,0 +1,18 @@
+<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="48.000000" height="48.000000" fill="none" customFrame="url(#clipPath_65)">
+	<defs>
+		<clipPath id="clipPath_65">
+			<rect width="48.000000" height="48.000000" x="0.000000" y="0.000000" rx="14.000000" fill="rgb(255,255,255)" />
+		</clipPath>
+		<clipPath id="clipPath_66">
+			<rect width="24.000000" height="24.000000" x="12.000000" y="12.000000" fill="rgb(255,255,255)" />
+		</clipPath>
+	</defs>
+	<rect id="图标背景" width="48.000000" height="48.000000" x="0.000000" y="0.000000" rx="14.000000" fill="rgb(255,245,236)" />
+	<g id="repeat" customFrame="url(#clipPath_66)">
+		<rect id="repeat" width="24.000000" height="24.000000" x="12.000000" y="12.000000" />
+		<path id="矢量 50" d="M29 14L33 18L29 22" fill-rule="nonzero" stroke="rgb(240,124,26)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.000000" />
+		<path id="矢量 51" d="M15 23L15 22C15 21.2979 15.1848 20.6081 15.5359 20C15.887 19.3919 16.3919 18.887 17 18.5359C17.6081 18.1848 18.2979 18 19 18L33 18" fill-rule="nonzero" stroke="rgb(240,124,26)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.000000" />
+		<path id="矢量 52" d="M19 34L15 30L19 26" fill-rule="nonzero" stroke="rgb(240,124,26)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.000000" />
+		<path id="矢量 53" d="M33 25L33 26C33 26.7021 32.8152 27.3919 32.4641 28C32.113 28.6081 31.6081 29.113 31 29.4641C30.3919 29.8152 29.7021 30 29 30L15 30" fill-rule="nonzero" stroke="rgb(240,124,26)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.000000" />
+	</g>
+</svg>

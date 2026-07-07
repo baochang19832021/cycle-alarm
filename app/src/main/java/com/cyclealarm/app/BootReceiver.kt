@@ -13,7 +13,14 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_TIME_CHANGED,
             Intent.ACTION_TIMEZONE_CHANGED,
             Intent.ACTION_DATE_CHANGED,
-            Intent.ACTION_MY_PACKAGE_REPLACED -> AlarmScheduler.rescheduleAll(context)
+            Intent.ACTION_MY_PACKAGE_REPLACED -> {
+                AlarmScheduler.rescheduleAll(context)
+                ReliabilityLogger.log(context, ReliabilityLogger.Event.BOOT,
+                    intent.action ?: "unknown")
+            }
+            AlarmScheduler.ACTION_HEALTH_CHECK -> {
+                AlarmScheduler.rescheduleAll(context)
+            }
         }
     }
 }

@@ -239,3 +239,15 @@ Google 文档明确指出，闹钟或日历这类核心功能依赖精准时间�
 - 用户贪睡后注册贪睡提醒，贪睡结束后恢复原周期。
 - 重启手机后重排已启用闹钟。
 - 系统时间或时区变化后重排已启用闹钟。
+
+## 13. 当前落地状态
+
+当前工程已经从早期规划进入 Android 原生实现状态：
+
+- 已有 `com.cyclealarm.app` Android 工程。
+- 每 N 天闹钟主线已具备列表、编辑、调度、响铃、贪睡和重排基础能力。
+- 权限和响铃可靠性模块已迁入当前主线，详见 `PERMISSION_HANDOFF.md`。
+- 周期计算已抽到 `domain` 层：`AlarmTimeCalculator`。
+- 周期计算已有 JVM 单元测试：`AlarmTimeCalculatorTest`。
+
+后续改周期规则时，必须先改 domain 测试，再改实现；不要把时间计算逻辑重新散落到 Activity 或 Scheduler。

@@ -5,15 +5,22 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Outer ring -->
-    <path
-        android:pathData="M54,30C40.7,30 30,40.7 30,54s10.7,24 24,24 24,-10.7 24,-24S67.3,30 54,30z"
-        android:strokeWidth="5"
-        android:strokeColor="@color/accent"
-        android:fillColor="@android:color/transparent"/>
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="1.15"
+        android:scaleY="1.15">
 
-    <!-- Clock hands -->
-    <path
-        android:fillColor="@color/accent"
-        android:pathData="M52.2,54L52.2,42L55.8,42L55.8,54L64,60L62,63.5L52.2,54z"/>
+        <!-- Outer ring -->
+        <path
+            android:pathData="M54,30C40.7,30 30,40.7 30,54s10.7,24 24,24 24,-10.7 24,-24S67.3,30 54,30z"
+            android:strokeWidth="5"
+            android:strokeColor="@color/accent"
+            android:fillColor="@android:color/transparent"/>
+
+        <!-- Clock hands -->
+        <path
+            android:fillColor="@color/accent"
+            android:pathData="M52.2,54L52.2,42L55.8,42L55.8,54L64,60L62,63.5L52.2,54z"/>
+    </group>
 </vector>

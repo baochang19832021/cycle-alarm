@@ -1,91 +1,2478 @@
-﻿package com.cyclealarm.app
+package com.cyclealarm.app
 
+import android.content.Context
 import android.content.Intent
+import android.content.ActivityNotFoundException
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.media.RingtoneManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
+import android.text.InputType
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
+import android.widget.DatePicker
+import android.widget.EditText
+import android.widget.ImageButton
+import android.widget.FrameLayout
+import android.widget.GridLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import com.google.android.material.snackbar.Snackbar
+import com.cyclealarm.domain.UiAlarmSchedulePlanner
+import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.materialswitch.MaterialSwitch
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
 
 class AlarmListActivity : AppCompatActivity() {
 
     companion object {
         const val ACTION_VIEW = "com.cyclealarm.app.ACTION_VIEW"
-        const val EXTRA_TYPE  = "alarm_type"
+        const val EXTRA_TYPE = "alarm_type"
         const val TYPE_INTERVAL = "interval"
-        const val TYPE_HOURLY   = "hourly"
-        const val TYPE_MONTHLY  = "monthly"
-        const val TYPE_LUNAR    = "lunar"
-        const val TYPE_HOLIDAY  = "holiday"
+        const val TYPE_HOURLY = "hourly"
+        const val TYPE_MONTHLY = "monthly"
+        const val TYPE_LUNAR = "lunar"
+        const val TYPE_HOLIDAY = "holiday"
         const val TYPE_LOCATION = "location"
+        private const val UI_STATE_PREFS = "pixso_ui_alarm_state"
+    }
+
+    private enum class Tab { ALARMS, FUNCTIONS, CALENDAR, MINE }
+
+    private enum class FeatureType(
+        val title: String,
+        val tag: String,
+        val accent: Int,
+        val tint: Int,
+        val iconRes: Int,
+        val desc: String
+    ) {
+        REGULAR(
+            "常规日期闹钟",
+            "常规日期",
+            0xFF2E6FF5.toInt(),
+            0xFFEEF3FF.toInt(),
+            R.drawable.ic_pixso_feature_regular,
+            "每天、每周、法定工作日、每月、每年"
+        ),
+        SPECIAL(
+            "特殊周期闹钟",
+            "特殊周期",
+            0xFFF07C1A.toInt(),
+            0xFFFFF5EC.toInt(),
+            R.drawable.ic_pixso_feature_special,
+            "每 N 分钟、小时、天、周、月、年"
+        ),
+        SHIFT(
+            "轮班闹钟",
+            "轮班",
+            0xFF1DB366.toInt(),
+            0xFFEDFBF3.toInt(),
+            R.drawable.ic_pixso_feature_shift,
+            "每轮 N 天循环，适合倒班和夜班"
+        ),
+        LUNAR(
+            "农历日期闹钟",
+            "农历",
+            0xFFA850C8.toInt(),
+            0xFFFDF3FF.toInt(),
+            R.drawable.ic_pixso_feature_lunar,
+            "农历生日、纪念日、传统节日提醒"
+        )
+    }
+
+    private data class DemoAlarm(
+        val title: String,
+        val type: FeatureType,
+        val time: String,
+        val next: String,
+        val rule: String,
+        val active: Boolean
+    )
+
+    private val root by lazy { LinearLayout(this) }
+    private val content by lazy { FrameLayout(this) }
+    private val statePrefs by lazy { getSharedPreferences(UI_STATE_PREFS, Context.MODE_PRIVATE) }
+    private val navItems = mutableMapOf<Tab, LinearLayout>()
+    private var currentTab = Tab.ALARMS
+
+    private var editHour = 8
+    private var editMinute = 0
+    private val featureEditTimes = mutableMapOf(
+        FeatureType.REGULAR to (8 to 0),
+        FeatureType.SPECIAL to (8 to 0),
+        FeatureType.LUNAR to (8 to 0)
+    )
+    private var shiftCycleDays = 4
+    private val shiftDaySummaries = mutableListOf("07:30", "07:30 +1", "19:30", "休")
+    private var deleteShiftDayIndex: Int? = null
+    private var selectedCalendarDay: Calendar = Calendar.getInstance()
+    private val alarmTitles = mutableMapOf(
+        FeatureType.REGULAR to "工作日提醒",
+        FeatureType.SPECIAL to "特殊周期提醒",
+        FeatureType.SHIFT to "轮班闹钟",
+        FeatureType.LUNAR to "农历生日提醒"
+    )
+    private val medNames = mutableMapOf<FeatureType, String>()
+    private val alarmDates = mutableMapOf<FeatureType, Calendar>()
+    private val alarmActive = mutableMapOf(
+        FeatureType.REGULAR to true,
+        FeatureType.SPECIAL to true,
+        FeatureType.SHIFT to false,
+        FeatureType.LUNAR to true
+    )
+    private var ringtoneSummary = "默认铃声"
+    private var selectedRingtoneUri: String? = null
+    private var mediaPlayer: MediaPlayer? = null
+    private var isPlayingPreview = false
+    private var currentEditingFeature: FeatureType? = null
+    private val hiddenFeatureTypes = mutableSetOf<FeatureType>()
+    private var isAlarmDeleteMode = false
+    private val checkedAlarmTypes = mutableSetOf<FeatureType>()
+    private var vibrationEnabled = true
+    private var ringDurationMinutes = 1
+    private var snoozeMinutes = 5
+    private var regularRepeatSummary = "每周一、三、五"
+    private val regularRepeatSelections = mutableSetOf("每周一", "每周三", "每周五")
+    private var specialRepeatValue = 40
+    private var specialRepeatUnit = "天"
+    private var specialRepeatHours = 2
+    private var specialRepeatMinutes = 30
+    private val specialWeekdaySelections = mutableSetOf("一", "三", "五")
+    private var lunarDateSummary = "五月十八"
+    private var lunarRepeatSummary = "每年"
+
+    private val ringtonePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK) {
+            val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+            }
+            selectedRingtoneUri = uri?.toString()
+            ringtoneSummary = if (uri != null) getDisplayNameFromUri(uri) else "系统默认"
+            saveUiState()
+            currentEditingFeature?.let { renderEdit(it) }
+        }
+    }
+
+    private val localAudioPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK) {
+            val uri = result.data?.data ?: return@registerForActivityResult
+            try {
+                val flags = result.data?.flags ?: 0
+                val takeFlags = flags and Intent.FLAG_GRANT_READ_URI_PERMISSION
+                if (takeFlags != 0) {
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+            } catch (_: SecurityException) {
+            }
+            selectedRingtoneUri = uri.toString()
+            ringtoneSummary = getDisplayNameFromUri(uri)
+            saveUiState()
+            currentEditingFeature?.let { renderEdit(it) }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_alarm_list)
 
-        val rvFunctionGrid = findViewById<RecyclerView>(R.id.rvFunctionGrid)
-        rvFunctionGrid.layoutManager = LinearLayoutManager(this)
-        loadFunctionGrid()
+        // Edge-to-edge for Android 15+ (targetSdk 35). Let content draw behind
+        // system bars but add padding so nothing is obscured.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+
+        loadUiState()
+        buildShell()
+        selectTab(Tab.ALARMS)
+        maybeShowReliabilityStarter()
     }
 
-    private fun loadFunctionGrid() {
-        val rvFunctionGrid = findViewById<RecyclerView>(R.id.rvFunctionGrid)
+    override fun onResume() {
+        super.onResume()
+        if (currentTab == Tab.MINE) renderMine()
 
-        val functions = listOf(
-            FunctionItem("每N天闹钟", true),
-            FunctionItem("每N小时闹钟", false),
-            FunctionItem("每月X号闹钟", false),
-            FunctionItem("农历日期闹钟", false),
-            FunctionItem("法定假日调休闹钟", false),
-            FunctionItem("地点触发闹钟", false)
-        )
+        // Post-fire verification: alert user if any alarm was missed
+        val missed = AlarmScheduler.findMissedAlarms(this)
+        if (missed.isNotEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("闹钟可能未按时触发")
+                .setMessage("以下闹钟应已触发但系统未报告：\n${missed.joinToString("\n") { "• $it" }}\n\n建议检查权限设置，确保闹钟能准时响起。")
+                .setPositiveButton("检查权限") { _, _ ->
+                    startActivity(Intent(this, ReliabilityCheckActivity::class.java))
+                }
+                .setNegativeButton("知道了", null)
+                .show()
+        }
+    }
 
-        rvFunctionGrid.adapter = FunctionAdapter(functions) { item ->
-            when (item.name) {
-                "每N天闹钟" -> {
-                    val intent = Intent(this, MainActivity::class.java).apply {
-                        action = ACTION_VIEW
-                        putExtra(EXTRA_TYPE, TYPE_INTERVAL)
+    override fun onPause() {
+        super.onPause()
+        stopRingtonePreview()
+    }
+
+    private fun buildShell() {
+        root.orientation = LinearLayout.VERTICAL
+        root.setBackgroundColor(0xFFF5F6F8.toInt())
+        root.layoutParams = LinearLayout.LayoutParams(-1, -1)
+
+        content.layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
+        root.addView(content)
+        root.addView(buildBottomNav())
+        setContentView(root)
+
+        // Handle system bar insets so content is not obscured by status bar or nav bar
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val statusBars = insets.getInsets(WindowInsetsCompat.Type.statusBars())
+            val navBars = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            root.setPadding(
+                statusBars.left,
+                statusBars.top,
+                statusBars.right,
+                (navBars.bottom + ime.bottom).coerceAtLeast(0)
+            )
+            WindowInsetsCompat.CONSUMED
+        }
+    }
+
+    private fun buildBottomNav(): View {
+        val nav = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(0xFFFFFFFF.toInt())
+            setPadding(0, dp(4), 0, dp(4))
+            layoutParams = LinearLayout.LayoutParams(-1, dp(60))
+        }
+
+        listOf(
+            Tab.ALARMS to (R.drawable.ic_pixso_nav_alarm to "闹钟"),
+            Tab.FUNCTIONS to (R.drawable.ic_pixso_nav_grid to "功能"),
+            Tab.CALENDAR to (R.drawable.ic_pixso_nav_calendar to "日历"),
+            Tab.MINE to (R.drawable.ic_pixso_nav_user to "我的")
+        ).forEach { (tab, pair) ->
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                isClickable = true
+                isFocusable = true
+                layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
+                setOnClickListener { selectTab(tab) }
+            }
+            item.addView(ImageView(this).apply {
+                setImageResource(pair.first)
+                setColorFilter(0xFF9CA3AF.toInt())
+            }, LinearLayout.LayoutParams(dp(22), dp(22)))
+            item.addView(TextView(this).apply {
+                text = pair.second
+                textSize = 11f
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+                setPadding(0, dp(3), 0, 0)
+            })
+            navItems[tab] = item
+            nav.addView(item)
+        }
+        return nav
+    }
+
+    private fun selectTab(tab: Tab) {
+        currentTab = tab
+        if (tab != Tab.ALARMS) { isAlarmDeleteMode = false; checkedAlarmTypes.clear() }
+        navItems.forEach { (itemTab, view) ->
+            val selected = itemTab == tab
+            val color = if (selected) 0xFF4A6CF7.toInt() else 0xFF9CA3AF.toInt()
+            (0 until view.childCount).forEach { idx ->
+                (view.getChildAt(idx) as? TextView)?.setTextColor(color)
+                (view.getChildAt(idx) as? ImageView)?.setColorFilter(color)
+            }
+        }
+        when (tab) {
+            Tab.ALARMS -> renderAlarmList()
+            Tab.FUNCTIONS -> renderFunctions()
+            Tab.CALENDAR -> renderCalendar()
+            Tab.MINE -> renderMine()
+        }
+    }
+
+    private fun setContent(view: View) {
+        content.removeAllViews()
+        content.addView(view)
+    }
+
+    private fun baseScroll(title: String, subtitle: String? = null, rightText: String? = null, onRight: (() -> Unit)? = null): LinearLayout {
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = false
+            setBackgroundColor(0xFFF5F6F8.toInt())
+        }
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(22), dp(16), dp(18))
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(16))
+        }
+        header.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            addView(TextView(this@AlarmListActivity).apply {
+                text = title
+                textSize = 23f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFF111827.toInt())
+            })
+            if (subtitle != null) addView(TextView(this@AlarmListActivity).apply {
+                text = subtitle
+                textSize = 13f
+                setTextColor(0xFF111827.toInt())
+                setPadding(0, dp(8), 0, 0)
+            })
+        })
+        if (rightText != null) {
+            header.addView(TextView(this).apply {
+                text = rightText
+                textSize = if (rightText == "+") 24f else 14f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFF4A6CF7.toInt())
+                gravity = Gravity.CENTER
+                setPadding(dp(12), dp(8), dp(4), dp(8))
+                setOnClickListener { onRight?.invoke() }
+            })
+        }
+        column.addView(header)
+        scroll.addView(column)
+        setContent(scroll)
+        return column
+    }
+
+    private fun renderAlarmList() {
+        val column = baseScroll("闹钟")
+        if (isAlarmDeleteMode) {
+            column.addView(deleteToolbar(), 1) // index 1 = right after header
+        }
+        val demos = listOf(
+            DemoAlarm(alarmTitle(FeatureType.SPECIAL), FeatureType.SPECIAL, featureTimeText(FeatureType.SPECIAL), "下次响铃：${dateText(FeatureType.SPECIAL)}", specialRepeatText(), alarmActive[FeatureType.SPECIAL] == true),
+            DemoAlarm(alarmTitle(FeatureType.REGULAR), FeatureType.REGULAR, featureTimeText(FeatureType.REGULAR), "下次响铃：${dateText(FeatureType.REGULAR)}", regularRepeatSummary, alarmActive[FeatureType.REGULAR] == true),
+            DemoAlarm(alarmTitle(FeatureType.SHIFT), FeatureType.SHIFT, shiftPreviewTimeText(), "下次响铃：第3天", "每轮 $shiftCycleDays 天", alarmActive[FeatureType.SHIFT] == true),
+            DemoAlarm(alarmTitle(FeatureType.LUNAR), FeatureType.LUNAR, featureTimeText(FeatureType.LUNAR), "下次响铃：$lunarDateSummary", lunarRepeatSummary, alarmActive[FeatureType.LUNAR] == true)
+        ).filterNot { it.type in hiddenFeatureTypes }
+        if (demos.isEmpty()) {
+            column.addView(TextView(this).apply {
+                text = "暂无闹钟"
+                textSize = 15f
+                setTextColor(0xFF111827.toInt())
+                gravity = Gravity.CENTER
+                setPadding(0, dp(40), 0, dp(8))
+            })
+        } else {
+            demos.forEach { column.addView(alarmCard(it)) }
+        }
+        // Floating add button (blue circle, white "+")
+        if (!isAlarmDeleteMode) {
+            content.addView(TextView(this).apply {
+                text = "+"
+                textSize = 26f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                setTextColor(0xFFFFFFFF.toInt())
+                background = rounded(0xFF4A6CF7.toInt(), dp(28))
+                isClickable = true
+                isFocusable = true
+                isHapticFeedbackEnabled = false
+                isSoundEffectsEnabled = false
+                setOnClickListener {
+                    isAlarmDeleteMode = false
+                    checkedAlarmTypes.clear()
+                    renderFunctions()
+                }
+            }, FrameLayout.LayoutParams(dp(56), dp(56)).apply {
+                gravity = Gravity.BOTTOM or Gravity.END
+                bottomMargin = dp(24)
+                rightMargin = dp(20)
+            })
+        }
+    }
+
+    private fun alarmCard(item: DemoAlarm): View {
+        return card().apply {
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+                leftMargin = dp(8)
+                rightMargin = dp(8)
+                bottomMargin = dp(11)
+            }
+            setPadding(dp(15), dp(12), dp(15), dp(12))
+            isClickable = true
+            isFocusable = true
+            isHapticFeedbackEnabled = false
+            isSoundEffectsEnabled = false
+            setOnClickListener {
+                if (isAlarmDeleteMode) {
+                    if (item.type in checkedAlarmTypes) checkedAlarmTypes.remove(item.type) else checkedAlarmTypes.add(item.type)
+                    renderAlarmList()
+                } else {
+                    renderEdit(item.type)
+                }
+            }
+            setOnLongClickListener {
+                if (!isAlarmDeleteMode) {
+                    isAlarmDeleteMode = true
+                    checkedAlarmTypes.add(item.type)
+                    renderAlarmList()
+                }
+                true
+            }
+            val top = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            top.addView(TextView(context).apply {
+                text = item.title
+                textSize = 16f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFF111827.toInt())
+                layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                isHapticFeedbackEnabled = false
+                isSoundEffectsEnabled = false
+            })
+            if (isAlarmDeleteMode) {
+                val checked = item.type in checkedAlarmTypes
+                top.addView(TextView(context).apply {
+                    text = if (checked) "✓" else ""
+                    textSize = 15f
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                    setTextColor(if (checked) 0xFFFFFFFF.toInt() else 0xFFCBD5E1.toInt())
+                    background = rounded(if (checked) 0xFF4A6CF7.toInt() else 0x00FFFFFF, dp(18), if (checked) 0xFF4A6CF7.toInt() else 0xFFCBD5E1.toInt())
+                }, LinearLayout.LayoutParams(dp(28), dp(28)))
+            } else {
+                top.addView(typeBadge(item.type))
+                top.addView(MaterialSwitch(context).apply {
+                    isChecked = item.active
+                    minWidth = dp(46)
+                    minimumWidth = dp(46)
+                    scaleX = 0.7f
+                    scaleY = 0.7f
+                    setOnClickListener {
+                        val nextChecked = isChecked
+                        alarmActive[item.type] = nextChecked
+                        saveUiState()
+                        if (nextChecked) {
+                            val scheduledCount = replaceScheduledAlarmsForFeature(item.type)
+                            Toast.makeText(this@AlarmListActivity, saveResultText(item.type, scheduledCount), Toast.LENGTH_SHORT).show()
+                            maybeShowReliabilityReminder()
+                        } else {
+                            cancelScheduledAlarmsForFeature(item.type)
+                        }
+                        renderAlarmList()
                     }
-                    startActivity(intent)
-                }
-                else -> {
-                    Toast.makeText(this, "「${item.name}」开发中，敬请期待", Toast.LENGTH_SHORT).show()
-                }
+                })
+            }
+            val topLayer = FrameLayout(context).apply {
+                addView(top, FrameLayout.LayoutParams(-1, -2))
+            }
+            addView(topLayer)
+            addView(TextView(context).apply {
+                text = item.time
+                textSize = 30f
+                setTextColor(if (item.active) 0xFF111827.toInt() else 0xFF9CA3AF.toInt())
+                includeFontPadding = false
+                setPadding(0, dp(7), 0, 0)
+            })
+            addView(TextView(context).apply {
+                text = item.next
+                textSize = 12f
+                setTextColor(0xFF8EA0B8.toInt())
+            })
+            addView(TextView(context).apply {
+                text = item.rule
+                textSize = 12f
+                setTextColor(0xFF8EA0B8.toInt())
+                setPadding(0, dp(6), 0, 0)
+            })
+        }
+    }
+
+    private fun renderFunctions() {
+        selectNavOnly(Tab.FUNCTIONS)
+        val column = baseScroll("功能", "选择要创建的闹钟类型")
+        FeatureType.values().forEach { feature ->
+            column.addView(functionCard(feature))
+        }
+    }
+
+    private fun selectNavOnly(tab: Tab) {
+        currentTab = tab
+        navItems.forEach { (itemTab, view) ->
+            val color = if (itemTab == tab) 0xFF4A6CF7.toInt() else 0xFF9CA3AF.toInt()
+            (0 until view.childCount).forEach { idx ->
+                (view.getChildAt(idx) as? TextView)?.setTextColor(color)
+                (view.getChildAt(idx) as? ImageView)?.setColorFilter(color)
             }
         }
     }
-}
 
-data class FunctionItem(
-    val name: String,
-    val isImplemented: Boolean
-)
-
-class FunctionAdapter(
-    private var items: List<FunctionItem>,
-    private val onClick: (FunctionItem) -> Unit
-) : RecyclerView.Adapter<FunctionAdapter.FunctionViewHolder>() {
-
-    inner class FunctionViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
-        val tvName: TextView = itemView.findViewById(R.id.tvFunctionName)
+    private fun functionCard(feature: FeatureType): View {
+        return card().apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(15), dp(13), dp(12), dp(13))
+            isHapticFeedbackEnabled = false
+            isSoundEffectsEnabled = false
+            setOnClickListener {
+                renderEdit(feature)
+            }
+            addView(iconTile(feature))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), 0, dp(8), 0)
+                layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                addView(TextView(context).apply {
+                    text = feature.title
+                    textSize = 16f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(0xFF111827.toInt())
+                })
+                addView(TextView(context).apply {
+                    text = feature.desc
+                    textSize = 12f
+                    setTextColor(0xFF8EA0B8.toInt())
+                    setPadding(0, dp(6), 0, 0)
+                })
+            })
+            addView(TextView(context).apply {
+                text = "›"
+                textSize = 26f
+                setTextColor(0xFFC7D0DD.toInt())
+            })
+        }
     }
 
-    override fun onCreateViewHolder(parent: android.view.ViewGroup, viewType: Int): FunctionViewHolder {
-        val view = android.view.LayoutInflater.from(parent.context)
-            .inflate(R.layout.item_function_card, parent, false)
-        return FunctionViewHolder(view)
+    private fun renderEdit(feature: FeatureType) {
+        currentEditingFeature = feature
+        val (featureHour, featureMinute) = featureTime(feature)
+        editHour = featureHour
+        editMinute = featureMinute
+        selectNavOnly(Tab.FUNCTIONS)
+        val rootEdit = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFFFFFFFF.toInt())
+        }
+        rootEdit.addView(topBar(feature.title, feature.accent, onCancel = { selectTab(Tab.FUNCTIONS) }) {
+            alarmActive[feature] = true
+            hiddenFeatureTypes.remove(feature)
+            isAlarmDeleteMode = false
+            saveUiState()
+            val scheduledCount = replaceScheduledAlarmsForFeature(feature)
+            Toast.makeText(this, saveResultText(feature, scheduledCount), Toast.LENGTH_SHORT).show()
+            maybeShowReliabilityReminder()
+            selectTab(Tab.ALARMS)
+        })
+
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = false
+        }
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(18), dp(20), dp(24))
+        }
+        if (feature == FeatureType.SHIFT) {
+            column.addView(settingsRow("闹钟名称", alarmTitle(feature), true) { showTitleDialog(feature) })
+            column.addView(settingsRow("开始日期", dateText(feature), true) { showDateDialog(feature, "开始日期") })
+            column.addView(settingsRow("周期", "每轮 $shiftCycleDays 天", true) { showShiftCycleDialog() })
+            column.addView(ringtoneSettingsRow(feature))
+            column.addView(vibrationButtonRow(feature))
+            column.addView(sectionTitle("排班设置"))
+            column.addView(TextView(this).apply {
+                text = "当前每轮 $shiftCycleDays 天，下方按周期显示第1天到第${shiftCycleDays}天"
+                textSize = 12f
+                gravity = Gravity.CENTER
+                setTextColor(0xFF94A3B8.toInt())
+                setPadding(0, 0, 0, dp(8))
+            })
+            column.addView(shiftDayGrid())
+        } else {
+            column.addView(timeWheels(editHour, editMinute) { h, m ->
+                setFeatureTime(feature, h, m)
+            })
+            column.addView(settingsRow("闹钟名称", alarmTitle(feature), true) { showTitleDialog(feature) })
+            when (feature) {
+                FeatureType.REGULAR -> {
+                    column.addView(settingsRow("响铃日期", dateText(feature), true) { showDateDialog(feature, "响铃日期") })
+                    column.addView(settingsRow("重复", regularRepeatSummary, true) { showRegularRepeatDialog(feature) })
+                }
+                FeatureType.SPECIAL -> {
+                    column.addView(settingsRow("开始日期", dateText(feature), true) { showDateDialog(feature, "开始日期") })
+                    column.addView(settingsRow("重复周期", specialRepeatText(), true) { showSpecialRepeatDialog(reset = true) })
+                }
+                FeatureType.LUNAR -> {
+                    column.addView(settingsRow("农历日期", lunarDateSummary, true) { showLunarDateDialog(feature.accent) })
+                    column.addView(settingsRow("重复", lunarRepeatSummary, true) { showLunarRepeatDialog(feature) })
+                }
+                FeatureType.SHIFT -> Unit
+            }
+            column.addView(ringtoneSettingsRow(feature))
+            column.addView(vibrationButtonRow(feature))
+            column.addView(settingsRow("响铃时长", "${ringDurationMinutes}分钟", true) { showNumberOptionDialog("响铃时长", ringDurationMinutes, 1..10, "分钟", feature.accent) { ringDurationMinutes = it; renderEdit(feature) } })
+            column.addView(settingsRow("贪睡间隔", "${snoozeMinutes}分钟", true) { showNumberOptionDialog("贪睡间隔", snoozeMinutes, 1..30, "分钟", feature.accent) { snoozeMinutes = it; renderEdit(feature) } })
+        }
+        scroll.addView(column)
+        rootEdit.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        setContent(rootEdit)
     }
 
-    override fun onBindViewHolder(holder: FunctionViewHolder, position: Int) {
-        val item = items[position]
-        holder.tvName.text = item.name
-        holder.tvName.setTextColor(if (item.isImplemented) 0xFF1A1A1A.toInt() else 0xFF999999.toInt())
-        holder.itemView.setOnClickListener { onClick(item) }
+    private fun topBar(title: String, accent: Int, onCancel: () -> Unit, onSave: () -> Unit): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFFFFFFFF.toInt())
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), dp(26), dp(16), 0)
+                layoutParams = LinearLayout.LayoutParams(-1, dp(72))
+                addView(TextView(context).apply {
+                    text = "取消"
+                    textSize = 15f
+                    setTextColor(0xFF8EA0B8.toInt())
+                    gravity = Gravity.CENTER_VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(dp(70), -1)
+                    setOnClickListener { onCancel() }
+                })
+                addView(TextView(context).apply {
+                    text = title
+                    textSize = 16f
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                    setTextColor(0xFF111827.toInt())
+                    layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
+                })
+                addView(TextView(context).apply {
+                    text = "保存"
+                    textSize = 15f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(accent)
+                    gravity = Gravity.CENTER_VERTICAL or Gravity.RIGHT
+                    layoutParams = LinearLayout.LayoutParams(dp(70), -1)
+                    setOnClickListener { onSave() }
+                })
+            })
+            addView(View(context).apply {
+                setBackgroundColor(accent)
+                alpha = 0.9f
+                layoutParams = LinearLayout.LayoutParams(-1, dp(2))
+            })
+        }
     }
 
-    override fun getItemCount(): Int = items.size
+    private fun timeWheels(hour: Int, minute: Int, onChange: (Int, Int) -> Unit): View {
+        val hourWheel = WheelView(this, 48, 5).apply {
+            isCyclic = true
+            items = (0..23).map { String.format("%02d", it) }
+            currentIndex = hour
+            onIndexChanged = { onChange(it, minute) }
+        }
+        val minuteWheel = WheelView(this, 48, 5).apply {
+            isCyclic = true
+            items = (0..59).map { String.format("%02d", it) }
+            currentIndex = minute
+            onIndexChanged = { onChange(hour, it) }
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(48), dp(10), dp(48), dp(24))
+            addView(hourWheel, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(TextView(context).apply {
+                text = ":"
+                textSize = 34f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFF111827.toInt())
+                gravity = Gravity.CENTER
+                background = null
+                isHapticFeedbackEnabled = false
+                isSoundEffectsEnabled = false
+            }, LinearLayout.LayoutParams(dp(36), dp(240)))
+            addView(minuteWheel, LinearLayout.LayoutParams(0, -2, 1f))
+        }
+    }
+
+    private fun shiftDayGrid(): View {
+        syncShiftDaysToCycle()
+        return GridLayout(this).apply {
+            columnCount = 4
+            setPadding(0, dp(8), 0, dp(16))
+            shiftDaySummaries.forEachIndexed { index, text ->
+                addView(dayCard(index, text), GridLayout.LayoutParams().apply {
+                    width = 0
+                    height = dp(72)
+                    columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+                    setMargins(dp(4), dp(4), dp(4), dp(8))
+                })
+            }
+            addView(addDayCard(), GridLayout.LayoutParams().apply {
+                width = 0
+                height = dp(72)
+                columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+                setMargins(dp(4), dp(4), dp(4), dp(8))
+            })
+        }
+    }
+
+    private fun dayCard(index: Int, summary: String): View {
+        val isRest = summary == "休"
+        val displaySummary = shiftDayCardSummary(summary)
+        return FrameLayout(this).apply {
+            isHapticFeedbackEnabled = false
+            isSoundEffectsEnabled = false
+            setOnLongClickListener {
+                deleteShiftDayIndex = index
+                renderEdit(FeatureType.SHIFT)
+                true
+            }
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+                background = rounded(if (isRest) 0xFFF8FAFC.toInt() else 0xFFFFFFFF.toInt(), dp(10), 0xFFE8EDF5.toInt())
+                isHapticFeedbackEnabled = false
+                isSoundEffectsEnabled = false
+                setOnClickListener {
+                    if (deleteShiftDayIndex == null) showShiftDayDialog(index)
+                }
+                setOnLongClickListener {
+                    deleteShiftDayIndex = index
+                    renderEdit(FeatureType.SHIFT)
+                    true
+                }
+                addView(TextView(context).apply {
+                    text = "第${index + 1}天"
+                    textSize = 13f
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                    textAlignment = View.TEXT_ALIGNMENT_CENTER
+                    setTextColor(0xFF111827.toInt())
+                })
+                addView(TextView(context).apply {
+                    text = displaySummary
+                    textSize = if (displaySummary.contains("\n")) 14f else 15f
+                    maxLines = 2
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                    textAlignment = View.TEXT_ALIGNMENT_CENTER
+                    setTextColor(if (isRest) 0xFF111827.toInt() else FeatureType.SHIFT.accent)
+                    setPadding(0, dp(5), 0, 0)
+                })
+            }, FrameLayout.LayoutParams(-1, -1))
+            if (deleteShiftDayIndex == index) {
+                addView(ImageButton(context).apply {
+                    setImageResource(R.drawable.ic_close)
+                    background = null
+                    isClickable = true
+                    isFocusable = true
+                    isHapticFeedbackEnabled = false
+                    isSoundEffectsEnabled = false
+                    setOnClickListener { deleteShiftDayCard(index) }
+                }, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.TOP or Gravity.END).apply {
+                    topMargin = dp(4)
+                    marginEnd = dp(4)
+                })
+            }
+        }
+    }
+
+    private fun shiftDayCardSummary(summary: String): String {
+        if (summary == "休") return summary
+        val times = summary.split("、").map { it.trim() }.filter { it.isNotEmpty() }
+        return when {
+            times.isEmpty() -> "休"
+            times.size == 1 -> times.first()
+            times.size == 2 -> times.joinToString("\n")
+            else -> "${times.first()}\n共${times.size}次"
+        }
+    }
+
+    private fun addDayCard(): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+            background = rounded(0x00FFFFFF, dp(10), 0xFFE0E7EF.toInt(), true)
+            isHapticFeedbackEnabled = false
+            isSoundEffectsEnabled = false
+            setOnClickListener {
+                deleteShiftDayIndex = null
+                shiftDaySummaries.add("休")
+                shiftCycleDays = shiftDaySummaries.size
+                saveUiState()
+                renderEdit(FeatureType.SHIFT)
+            }
+            addView(TextView(context).apply {
+                text = "+"
+                textSize = 26f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFFCBD5E1.toInt())
+                gravity = Gravity.CENTER
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+                layoutParams = LinearLayout.LayoutParams(-1, -2)
+                includeFontPadding = false
+            })
+            addView(TextView(context).apply {
+                text = "添加"
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFFCBD5E1.toInt())
+                gravity = Gravity.CENTER
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+                layoutParams = LinearLayout.LayoutParams(-1, -2)
+                includeFontPadding = false
+            })
+        }
+    }
+
+    private fun showShiftDayDialog(index: Int) {
+        val dialog = BottomSheetDialog(this)
+        val column = bottomSheetBase("第${index + 1}天", FeatureType.SHIFT.accent, onCancel = { dialog.dismiss() }) {
+            dialog.dismiss()
+            renderEdit(FeatureType.SHIFT)
+        }
+        val enabledSwitch = MaterialSwitch(this).apply {
+            text = "开启提醒"
+            textSize = 15f
+            isChecked = shiftDaySummaries[index] != "休"
+            setTextColor(0xFF111827.toInt())
+        }
+        column.addView(enabledSwitch, LinearLayout.LayoutParams(-1, dp(54)))
+        val dayTimes = if (shiftDaySummaries[index] == "休") mutableListOf("07:30") else shiftDaySummaries[index].split("、").toMutableList()
+        val times = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        dayTimes.forEachIndexed { timeIndex, time ->
+            times.addView(settingsRow("提醒时间", time, true) {
+                showTimeOnlyDialog(time, FeatureType.SHIFT.accent) { next ->
+                    dayTimes[timeIndex] = next
+                    applyShiftDaySummaryChange(index, dayTimes.joinToString("、"))
+                    saveUiState()
+                    dialog.dismiss()
+                    renderEdit(FeatureType.SHIFT)
+                }
+            })
+        }
+        column.addView(times)
+        column.addView(TextView(this).apply {
+            text = "+  添加提醒时间"
+            textSize = 15f
+            setTextColor(FeatureType.SHIFT.accent)
+            setPadding(dp(18), dp(16), dp(18), dp(20))
+            setOnClickListener {
+                showTimeOnlyDialog("07:30", FeatureType.SHIFT.accent) { next ->
+                    if (shiftDaySummaries[index] == "休") dayTimes.clear()
+                    dayTimes.add(next)
+                    applyShiftDaySummaryChange(index, dayTimes.joinToString("、"))
+                    saveUiState()
+                    dialog.dismiss()
+                    renderEdit(FeatureType.SHIFT)
+                }
+            }
+        })
+        enabledSwitch.setOnCheckedChangeListener { _, checked ->
+            applyShiftDaySummaryChange(index, if (checked) "07:30" else "休")
+            saveUiState()
+        }
+        dialog.setContentView(column)
+        dialog.show()
+    }
+
+    private fun deleteShiftDayCard(index: Int) {
+        if (shiftDaySummaries.size <= 1) {
+            Toast.makeText(this, "至少保留1天", Toast.LENGTH_SHORT).show()
+            return
+        }
+        shiftDaySummaries.removeAt(index)
+        shiftCycleDays = shiftDaySummaries.size
+        deleteShiftDayIndex = null
+        saveUiState()
+        renderEdit(FeatureType.SHIFT)
+    }
+
+    private fun applyShiftDaySummaryChange(index: Int, summary: String) {
+        val updated = UiAlarmSchedulePlanner.applyShiftDaySummaryChange(shiftDaySummaries, index, summary)
+        shiftDaySummaries.clear()
+        shiftDaySummaries.addAll(updated)
+    }
+
+    private fun showTimeOnlyDialog(current: String, accent: Int, onDone: ((String) -> Unit)? = null) {
+        val parts = current.split(":")
+        var selectedHour = parts.getOrNull(0)?.toIntOrNull() ?: 7
+        var selectedMinute = parts.getOrNull(1)?.take(2)?.toIntOrNull() ?: 30
+        val dialog = BottomSheetDialog(this)
+        val column = bottomSheetBase("编辑提醒时间", accent, onCancel = { dialog.dismiss() }) {
+            onDone?.invoke(String.format("%02d:%02d", selectedHour, selectedMinute))
+            saveUiState()
+            dialog.dismiss()
+        }
+        column.addView(timeWheels(selectedHour, selectedMinute) { h, m ->
+            selectedHour = h
+            selectedMinute = m
+        })
+        dialog.setContentView(column)
+        dialog.show()
+    }
+
+    private fun showShiftCycleDialog() {
+        val dialog = BottomSheetDialog(this)
+        val column = bottomSheetBase("周期", FeatureType.SHIFT.accent, onCancel = { dialog.dismiss() }) {
+            syncShiftDaysToCycle()
+            saveUiState()
+            dialog.dismiss()
+            renderEdit(FeatureType.SHIFT)
+        }
+        val wheel = WheelView(this, 54, 5).apply {
+            items = (1..31).map { it.toString() }
+            currentIndex = (shiftCycleDays - 1).coerceAtLeast(0)
+            onIndexChanged = { idx -> shiftCycleDays = idx + 1 }
+        }
+        column.addView(LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            addView(TextView(context).apply {
+                text = "每一轮"
+                textSize = 17f
+                setTextColor(0xFF8EA0B8.toInt())
+            })
+            addView(wheel, LinearLayout.LayoutParams(dp(112), -2))
+            addView(TextView(context).apply {
+                text = "天"
+                textSize = 17f
+                setTextColor(0xFF8EA0B8.toInt())
+            })
+        })
+        dialog.setContentView(column)
+        dialog.show()
+    }
+
+    private fun showSpecialRepeatDialog(reset: Boolean = true) {
+        if (reset) {
+            pendingSpecialRepeatValue = specialRepeatValue.coerceIn(specialRepeatRange(specialRepeatUnit))
+            pendingSpecialRepeatUnit = specialRepeatUnit
+        }
+        val dialog = BottomSheetDialog(this)
+        fun commitAndClose() {
+            if (pendingSpecialRepeatUnit != "时分") {
+                pendingSpecialRepeatValue = pendingSpecialRepeatValue.coerceIn(specialRepeatRange(pendingSpecialRepeatUnit))
+                specialRepeatValue = pendingSpecialRepeatValue
+            } else if (specialRepeatHours == 0 && specialRepeatMinutes == 0) {
+                specialRepeatMinutes = 30
+            }
+            specialRepeatUnit = pendingSpecialRepeatUnit
+            saveUiState()
+            dialog.dismiss()
+            renderEdit(FeatureType.SPECIAL)
+        }
+        fun rebuildContent(): LinearLayout {
+            val column = bottomSheetBase("重复周期", FeatureType.SPECIAL.accent, onCancel = { dialog.dismiss() }) {
+                commitAndClose()
+            }
+            if (pendingSpecialRepeatUnit == "时分") {
+                column.addView(hourMinuteRepeatWheels())
+            } else {
+                val repeatRange = specialRepeatRange(pendingSpecialRepeatUnit)
+                pendingSpecialRepeatValue = pendingSpecialRepeatValue.coerceIn(repeatRange)
+                column.addView(slotNumberRepeatWheels(repeatRange, pendingSpecialRepeatUnit))
+            }
+            val unitRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setPadding(0, dp(10), 0, dp(8))
+            }
+            val weekChoices = GridLayout(this).apply {
+                columnCount = 4
+                setPadding(0, dp(8), 0, dp(8))
+                visibility = View.GONE
+            }
+            listOf("时分", "天", "周", "月", "年").forEach { label ->
+                unitRow.addView(pill(label, label == pendingSpecialRepeatUnit, FeatureType.SPECIAL.accent).apply {
+                    setOnClickListener {
+                        pendingSpecialRepeatUnit = label
+                        if (label != "时分") pendingSpecialRepeatValue = pendingSpecialRepeatValue.coerceIn(specialRepeatRange(label))
+                        dialog.setContentView(rebuildContent())
+                    }
+                })
+            }
+            column.addView(unitRow)
+            if (pendingSpecialRepeatUnit == "周") {
+                column.addView(sectionTitle("选择星期"))
+                listOf("一", "二", "三", "四", "五", "六", "日").forEach { day ->
+                    weekChoices.addView(pill(day, day in specialWeekdaySelections, FeatureType.SPECIAL.accent).apply {
+                        setOnClickListener {
+                            if (day in specialWeekdaySelections) specialWeekdaySelections.remove(day) else specialWeekdaySelections.add(day)
+                            saveUiState()
+                            dialog.setContentView(rebuildContent())
+                        }
+                    }, GridLayout.LayoutParams().apply {
+                        width = 0
+                        height = dp(42)
+                        columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+                        setMargins(dp(6), dp(5), dp(6), dp(5))
+                    })
+                }
+                weekChoices.visibility = View.VISIBLE
+                column.addView(weekChoices)
+                column.addView(TextView(this).apply {
+                    text = "每 N 周支持周一到周日完整选择"
+                    textSize = 12f
+                    setTextColor(0xFF94A3B8.toInt())
+                    setPadding(dp(18), dp(8), dp(18), dp(16))
+                })
+            }
+            column.addView(TextView(this).apply {
+                text = specialRepeatRangeHint(pendingSpecialRepeatUnit)
+                textSize = 12f
+                gravity = Gravity.CENTER
+                setTextColor(0xFF94A3B8.toInt())
+                setPadding(dp(18), dp(8), dp(18), dp(10))
+            })
+            return column
+        }
+        dialog.setContentView(rebuildContent())
+        dialog.show()
+    }
+
+    private var pendingSpecialRepeatValue = 40
+    private var pendingSpecialRepeatUnit = "天"
+
+    private fun hourMinuteRepeatWheels(): View {
+        val hourWheel = WheelView(this, 52, 5).apply {
+            items = (0..72).map { it.toString() }
+            currentIndex = specialRepeatHours.coerceIn(0, 72)
+            onIndexChanged = { specialRepeatHours = it }
+        }
+        val minuteWheel = WheelView(this, 52, 5).apply {
+            items = (0..59).map { it.toString() }
+            currentIndex = specialRepeatMinutes.coerceIn(0, 59)
+            onIndexChanged = { specialRepeatMinutes = it }
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(18), 0, dp(18), dp(6))
+            addView(TextView(context).apply { text = "每"; textSize = 16f; setTextColor(0xFF8EA0B8.toInt()) })
+            addView(hourWheel, LinearLayout.LayoutParams(dp(86), -2))
+            addView(TextView(context).apply { text = "小时"; textSize = 16f; setTextColor(0xFF111827.toInt()) })
+            addView(minuteWheel, LinearLayout.LayoutParams(dp(86), -2))
+            addView(TextView(context).apply { text = "分钟"; textSize = 16f; setTextColor(0xFF111827.toInt()) })
+        }
+    }
+
+    private fun slotNumberRepeatWheels(range: IntRange, unit: String): View {
+        if (unit == "天" && range.last == 365) {
+            var isRendering = false
+            var selectedValue = pendingSpecialRepeatValue.coerceIn(1, 365)
+            lateinit var hundredsWheel: WheelView
+            lateinit var tensWheel: WheelView
+            lateinit var onesWheel: WheelView
+            var renderValue: (Int) -> Unit = {}
+
+            fun updateFromWheels() {
+                if (isRendering) return
+                val hundreds = hundredsWheel.currentIndex
+                val tens = tensWheel.items[tensWheel.currentIndex].toInt()
+                val ones = onesWheel.items[onesWheel.currentIndex].toInt()
+                renderValue((hundreds * 100 + tens * 10 + ones).coerceIn(1, 365))
+            }
+
+            fun setWheelDigits(wheel: WheelView, digits: IntRange, selectedDigit: Int) {
+                val values = digits.map { it.toString() }
+                wheel.items = values
+                wheel.currentIndex = values.indexOf(selectedDigit.toString()).coerceAtLeast(0)
+            }
+
+            renderValue = { value: Int ->
+                selectedValue = value.coerceIn(1, 365)
+                val hundreds = selectedValue / 100
+                val tens = (selectedValue % 100) / 10
+                val ones = selectedValue % 10
+                val maxTens = if (hundreds == 3) 6 else 9
+                val maxOnes = if (hundreds == 3 && tens == 6) 5 else 9
+
+                isRendering = true
+                setWheelDigits(hundredsWheel, 0..3, hundreds)
+                setWheelDigits(tensWheel, 0..maxTens, tens)
+                setWheelDigits(onesWheel, 0..maxOnes, ones)
+                isRendering = false
+
+                pendingSpecialRepeatValue = selectedValue
+            }
+
+            return LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setPadding(dp(18), 0, dp(18), dp(6))
+                addView(TextView(context).apply { text = "每"; textSize = 16f; setTextColor(0xFF8EA0B8.toInt()) })
+
+                hundredsWheel = WheelView(this@AlarmListActivity, 52, 3).apply {
+                    isCyclic = true
+                    onIndexChanged = { updateFromWheels() }
+                }
+                tensWheel = WheelView(this@AlarmListActivity, 52, 3).apply {
+                    isCyclic = true
+                    onIndexChanged = { updateFromWheels() }
+                }
+                onesWheel = WheelView(this@AlarmListActivity, 52, 3).apply {
+                    isCyclic = true
+                    onIndexChanged = { updateFromWheels() }
+                }
+
+                addView(hundredsWheel, LinearLayout.LayoutParams(dp(58), -2))
+                addView(tensWheel, LinearLayout.LayoutParams(dp(58), -2))
+                addView(onesWheel, LinearLayout.LayoutParams(dp(58), -2))
+                addView(TextView(context).apply {
+                    text = unit
+                    textSize = 18f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(0xFF111827.toInt())
+                    setPadding(dp(8), 0, 0, 0)
+                })
+
+                renderValue(selectedValue)
+            }
+        }
+
+        if (range.last <= 99) {
+            return LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setPadding(dp(18), 0, dp(18), dp(6))
+                addView(TextView(context).apply { text = "每"; textSize = 16f; setTextColor(0xFF8EA0B8.toInt()) })
+                addView(WheelView(this@AlarmListActivity, 52, 5).apply {
+                    isCyclic = true
+                    items = range.map { it.toString() }
+                    currentIndex = (pendingSpecialRepeatValue.coerceIn(range) - range.first).coerceAtLeast(0)
+                    onIndexChanged = { index ->
+                        pendingSpecialRepeatValue = range.first + index
+                    }
+                }, LinearLayout.LayoutParams(dp(96), -2))
+                addView(TextView(context).apply {
+                    text = unit
+                    textSize = 18f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(0xFF111827.toInt())
+                    setPadding(dp(8), 0, 0, 0)
+                })
+            }
+        }
+
+        var hundreds = pendingSpecialRepeatValue / 100
+        var tens = (pendingSpecialRepeatValue / 10) % 10
+        var ones = pendingSpecialRepeatValue % 10
+
+        fun updateValue() {
+            val raw = hundreds * 100 + tens * 10 + ones
+            pendingSpecialRepeatValue = raw.coerceIn(range)
+        }
+
+        fun digitWheel(initial: Int, onDigit: (Int) -> Unit): WheelView =
+            WheelView(this, 52, 5).apply {
+                isCyclic = true
+                items = (0..9).map { it.toString() }
+                currentIndex = initial.coerceIn(0, 9)
+                onIndexChanged = {
+                    onDigit(it)
+                    updateValue()
+                }
+            }
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(18), 0, dp(18), dp(6))
+            addView(TextView(context).apply { text = "每"; textSize = 16f; setTextColor(0xFF8EA0B8.toInt()) })
+            addView(digitWheel(hundreds) { hundreds = it }, LinearLayout.LayoutParams(dp(58), -2))
+            addView(digitWheel(tens) { tens = it }, LinearLayout.LayoutParams(dp(58), -2))
+            addView(digitWheel(ones) { ones = it }, LinearLayout.LayoutParams(dp(58), -2))
+            addView(TextView(context).apply {
+                text = unit
+                textSize = 18f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFF111827.toInt())
+                setPadding(dp(8), 0, 0, 0)
+            })
+        }
+    }
+
+    private fun specialRepeatRange(unit: String): IntRange =
+        when (unit) {
+            "天" -> 1..365
+            "周" -> 1..10
+            "月" -> 1..48
+            "年" -> 1..10
+            else -> 1..365
+        }
+
+    private fun specialRepeatRangeHint(unit: String): String =
+        when (unit) {
+            "时分" -> "小时 0-72，分钟 0-59；不能同时为 0"
+            "天" -> "适合复诊、还款、保养等间隔提醒：1-365 天"
+            "周" -> "适合隔周、每几周固定星期提醒：1-10 周"
+            "月" -> "适合账单、纪念日等长期提醒：1-48 月"
+            "年" -> "适合周年类提醒：1-10 年"
+            else -> ""
+        }
+
+    private fun showRegularRepeatDialog(feature: FeatureType) {
+        val dialog = BottomSheetDialog(this)
+        fun commitAndClose() {
+            regularRepeatSummary = when {
+                regularRepeatSummary in listOf("每天", "法定工作日", "每月", "每年") -> regularRepeatSummary
+                regularRepeatSelections.size == 7 -> "每天"
+                regularRepeatSelections.isEmpty() -> "不重复"
+                else -> regularRepeatSelections.joinToString("、") { it.removePrefix("每周") }.let { "每周$it" }
+            }
+            saveUiState()
+            dialog.dismiss()
+            renderEdit(feature)
+        }
+        fun rebuildContent(): LinearLayout {
+            val column = bottomSheetBase("重复", feature.accent, onCancel = { dialog.dismiss() }) {
+                commitAndClose()
+            }
+            listOf("每周一", "每周二", "每周三", "每周四", "每周五", "每周六", "每周日", "每天", "法定工作日", "每月", "每年")
+                .forEach { label ->
+                    val selected = label in regularRepeatSelections || label == regularRepeatSummary
+                    column.addView(regularRepeatOptionRow(label, selected, feature.accent) {
+                        if (label.startsWith("每周")) {
+                            regularRepeatSummary = ""
+                            if (label in regularRepeatSelections) regularRepeatSelections.remove(label) else regularRepeatSelections.add(label)
+                        } else {
+                            regularRepeatSelections.clear()
+                            regularRepeatSummary = label
+                        }
+                        saveUiState()
+                        dialog.setContentView(rebuildContent())
+                    })
+                }
+            return column
+        }
+        dialog.setContentView(rebuildContent())
+        dialog.show()
+    }
+
+    private fun showLunarDateDialog(accent: Int) {
+        val dialog = BottomSheetDialog(this)
+        val months = listOf("正月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "冬月", "腊月")
+        val days = listOf("初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十", "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十", "廿一", "廿二", "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十")
+        var monthIndex = months.indexOfFirst { lunarDateSummary.startsWith(it) }.coerceAtLeast(4)
+        var dayIndex = days.indexOfFirst { lunarDateSummary.endsWith(it) }.coerceAtLeast(17)
+        val column = bottomSheetBase("农历日期", accent, onCancel = { dialog.dismiss() }) {
+            lunarDateSummary = "${months[monthIndex]}${days[dayIndex]}"
+            saveUiState()
+            dialog.dismiss()
+            renderEdit(FeatureType.LUNAR)
+        }
+        val monthWheel = WheelView(this, 52, 5).apply {
+            items = months
+            currentIndex = monthIndex
+            onIndexChanged = { monthIndex = it }
+        }
+        val dayWheel = WheelView(this, 52, 5).apply {
+            items = days
+            currentIndex = dayIndex
+            onIndexChanged = { dayIndex = it }
+        }
+        column.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(6), dp(28), dp(18))
+            addView(monthWheel, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(dayWheel, LinearLayout.LayoutParams(0, -2, 1f))
+        })
+        dialog.setContentView(column)
+        dialog.show()
+    }
+
+    private fun showLunarRepeatDialog(feature: FeatureType) {
+        showOptionDialog("农历重复", listOf("每年", "只提醒一次"), lunarRepeatSummary, feature.accent) {
+            lunarRepeatSummary = it
+            saveUiState()
+            renderEdit(feature)
+        }
+    }
+
+    private fun showTitleDialog(feature: FeatureType) {
+        val input = EditText(this).apply {
+            setText(alarmTitle(feature))
+            selectAll()
+            inputType = InputType.TYPE_CLASS_TEXT
+            setSingleLine(true)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("闹钟名称")
+            .setView(input)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("完成") { _, _ ->
+                val next = input.text?.toString()?.trim().orEmpty()
+                if (next.isNotEmpty()) alarmTitles[feature] = next
+                saveUiState()
+                renderEdit(feature)
+            }
+            .show()
+    }
+
+    private fun showDateDialog(feature: FeatureType, title: String) {
+        val cal = (alarmDates[feature] ?: Calendar.getInstance()).clone() as Calendar
+        val picker = DatePicker(this).apply {
+            init(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH), cal.get(Calendar.DAY_OF_MONTH), null)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(picker)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("完成") { _, _ ->
+                alarmDates[feature] = Calendar.getInstance().apply {
+                    set(Calendar.YEAR, picker.year)
+                    set(Calendar.MONTH, picker.month)
+                    set(Calendar.DAY_OF_MONTH, picker.dayOfMonth)
+                }
+                saveUiState()
+                renderEdit(feature)
+            }
+            .show()
+    }
+
+    private fun showRingtoneDialog(feature: FeatureType) {
+        currentEditingFeature = feature
+        val dialog = BottomSheetDialog(this)
+        fun rebuildContent(): LinearLayout {
+            val column = bottomSheetBase("铃声", feature.accent, onCancel = {
+                stopRingtonePreview()
+                dialog.dismiss()
+            }) {
+                stopRingtonePreview()
+                dialog.dismiss()
+                renderEdit(feature)
+            }
+            column.addView(settingsRow("当前铃声", ringtoneSummary, false))
+            column.addView(settingsRow("选择系统铃声", "", true) {
+                stopRingtonePreview()
+                dialog.dismiss()
+                openSystemRingtonePicker()
+            })
+            column.addView(settingsRow("选择本地音频", "", true) {
+                stopRingtonePreview()
+                dialog.dismiss()
+                openLocalAudioPicker()
+            })
+            column.addView(settingsRow(if (isPlayingPreview) "停止试听" else "试听铃声", if (isPlayingPreview) "■" else "▶", false) {
+                toggleRingtonePreview()
+                dialog.setContentView(rebuildContent())
+            })
+            return column
+        }
+        dialog.setContentView(rebuildContent())
+        dialog.show()
+    }
+
+    private fun openSystemRingtonePicker() {
+        val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+            putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_ALARM)
+            putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "选择闹钟铃声")
+            putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+            putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false)
+            selectedRingtoneUri?.let { putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, Uri.parse(it)) }
+        }
+        try {
+            ringtonePickerLauncher.launch(findPreferredRingtonePackage(intent)?.let { Intent(intent).setPackage(it) } ?: intent)
+        } catch (_: ActivityNotFoundException) {
+            openLocalAudioPicker()
+        }
+    }
+
+    private fun findPreferredRingtonePackage(intent: Intent): String? {
+        val handlers = packageManager.queryIntentActivities(intent, 0)
+        if (handlers.isEmpty()) return null
+        val preferredPackages = listOf(
+            "com.android.thememanager",
+            "com.android.soundpicker",
+            "com.google.android.soundpicker",
+            "com.android.settings"
+        )
+        preferredPackages.firstOrNull { preferred ->
+            handlers.any { it.activityInfo?.packageName == preferred }
+        }?.let { return it }
+        val systemHandlers = handlers.filter { resolveInfo ->
+            val appInfo = resolveInfo.activityInfo?.applicationInfo ?: return@filter false
+            appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM != 0
+        }
+        return if (systemHandlers.size == 1) systemHandlers.first().activityInfo.packageName else null
+    }
+
+    private fun openLocalAudioPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "audio/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        try {
+            localAudioPickerLauncher.launch(intent)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, "这台手机暂时无法打开本地音乐", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun toggleRingtonePreview() {
+        if (isPlayingPreview) stopRingtonePreview() else startRingtonePreview()
+    }
+
+    private fun startRingtonePreview() {
+        try {
+            mediaPlayer?.release()
+            mediaPlayer = null
+            val uri = selectedRingtoneUri?.let { Uri.parse(it) } ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            mediaPlayer = MediaPlayer().apply {
+                setDataSource(this@AlarmListActivity, uri)
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
+                setOnCompletionListener { stopRingtonePreview() }
+                prepare()
+                start()
+            }
+            isPlayingPreview = true
+            Toast.makeText(this, "正在试听铃声", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "无法播放铃声：${e.message}", Toast.LENGTH_LONG).show()
+            stopRingtonePreview()
+        }
+    }
+
+    private fun stopRingtonePreview() {
+        try {
+            mediaPlayer?.release()
+        } catch (_: Exception) {
+        }
+        mediaPlayer = null
+        isPlayingPreview = false
+    }
+
+    private fun getDisplayNameFromUri(uri: Uri): String {
+        return try {
+            RingtoneManager.getRingtone(this, uri)?.getTitle(this)
+        } catch (_: Exception) {
+            null
+        } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "自定义铃声"
+    }
+
+    private fun showNumberOptionDialog(title: String, current: Int, range: IntRange, unit: String, accent: Int, onDone: (Int) -> Unit) {
+        val dialog = BottomSheetDialog(this)
+        var selected = current.coerceIn(range)
+        val column = bottomSheetBase(title, accent, onCancel = { dialog.dismiss() }) {
+            onDone(selected)
+            saveUiState()
+            dialog.dismiss()
+        }
+        val wheel = WheelView(this, 52, 5).apply {
+            items = range.map { it.toString() }
+            currentIndex = selected - range.first
+            onIndexChanged = { selected = range.first + it }
+        }
+        column.addView(LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            addView(wheel, LinearLayout.LayoutParams(dp(112), -2))
+            addView(TextView(context).apply {
+                text = unit
+                textSize = 17f
+                setTextColor(0xFF8EA0B8.toInt())
+            })
+        })
+        dialog.setContentView(column)
+        dialog.show()
+    }
+
+    private fun showOptionDialog(title: String, options: List<String>, selected: String, accent: Int, onSelected: (String) -> Unit) {
+        val dialog = BottomSheetDialog(this)
+        fun rebuildContent(currentSelected: String): LinearLayout {
+            val column = bottomSheetBase(title, accent, onCancel = { dialog.dismiss() }) { dialog.dismiss() }
+            options.forEach { option ->
+                column.addView(regularRepeatOptionRow(option, option == currentSelected, accent) {
+                    onSelected(option)
+                    dialog.setContentView(rebuildContent(option))
+                })
+            }
+            return column
+        }
+        dialog.setContentView(rebuildContent(selected))
+        dialog.show()
+    }
+
+    private fun showReliabilityTips() {
+        AlertDialog.Builder(this)
+            .setTitle("保持闹钟可靠")
+            .setMessage(
+                "1. 请勿在系统设置中「强制停止」本应用，否则闹钟将失效。\n\n" +
+                "2. 重启手机后请至少解锁一次屏幕，否则闹钟可能无法触发。\n\n" +
+                "3. 睡前建议保持手机充电，或使用飞行模式代替关机。\n\n" +
+                "4. 定期检查「必要权限」页面，确保通知、自启动、电池优化等权限未被系统自动关闭。\n\n" +
+                "5. 如闹钟未按时响起，请打开「必要权限」页面运行一次测试响铃。"
+            )
+            .setPositiveButton("知道了", null)
+            .setNegativeButton("检查权限") { _, _ ->
+                startActivity(Intent(this, ReliabilityCheckActivity::class.java))
+            }
+            .show()
+    }
+
+    private fun showHelpAndPrivacyDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("使用手册与隐私安全")
+            .setMessage(
+                "使用说明：在“功能”页选择闹钟类型，设置时间、日期、重复规则、铃声、震动后保存；在“闹钟”页可启停或再次编辑。\n\n" +
+                    "必要权限：通知、悬浮窗、电池优化、全屏提醒等只用于提升锁屏和后台响铃可靠性，可在“必要权限”页检查。\n\n" +
+                    "隐私原则：当前基础功能以本地使用为主，不需要登录账号，不上传闹钟内容，不申请通讯录、短信、通话记录、相机、麦克风等无关权限。\n\n" +
+                    "当前版本：${currentVersionName()}"
+            )
+            .setPositiveButton("我知道了", null)
+            .show()
+    }
+
+    private fun bottomSheetBase(title: String, accent: Int, onCancel: () -> Unit, onDone: () -> Unit): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, dp(20))
+            background = rounded(0xFFFFFFFF.toInt(), dp(20))
+            addView(View(context).apply {
+                background = rounded(0xFFE5E7EB.toInt(), dp(2))
+                layoutParams = LinearLayout.LayoutParams(dp(36), dp(4)).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    bottomMargin = dp(12)
+                }
+            })
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(18), 0, dp(18), 0)
+                addView(TextView(context).apply {
+                    text = "取消"
+                    textSize = 15f
+                    setTextColor(0xFF8EA0B8.toInt())
+                    setOnClickListener { onCancel() }
+                }, LinearLayout.LayoutParams(dp(84), dp(48)))
+                addView(TextView(context).apply {
+                    text = title
+                    textSize = 16f
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                    setTextColor(0xFF111827.toInt())
+                }, LinearLayout.LayoutParams(0, dp(48), 1f))
+                addView(TextView(context).apply {
+                    text = "完成"
+                    textSize = 15f
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
+                    setTextColor(accent)
+                    setOnClickListener { onDone() }
+                }, LinearLayout.LayoutParams(dp(84), dp(48)))
+            })
+        }
+    }
+
+    private fun renderCalendar() {
+        val column = baseScroll("", rightText = "今天") {}
+        column.removeAllViews()
+        val now = selectedCalendarDay.clone() as Calendar
+        val shiftStartMs = (alarmDates[FeatureType.SHIFT] ?: Calendar.getInstance()).timeInMillis
+        column.addView(LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(10))
+            addView(TextView(context).apply {
+                text = "‹  ${SimpleDateFormat("yyyy年M月", Locale.CHINA).format(now.time)}  ›"
+                textSize = 22f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFF111827.toInt())
+                layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            })
+            addView(TextView(context).apply {
+                text = "今天"
+                textSize = 15f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(FeatureType.SHIFT.accent)
+                setOnClickListener {
+                    selectedCalendarDay = Calendar.getInstance()
+                    renderCalendar()
+                }
+            })
+        })
+        column.addView(calendarGrid(now, shiftStartMs))
+        column.addView(card().apply {
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            addView(TextView(context).apply {
+                text = "${now.get(Calendar.MONTH) + 1}月${now.get(Calendar.DAY_OF_MONTH)}日 ${weekName(now)}"
+                textSize = 18f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFF111827.toInt())
+            })
+            val reminderLines = UiAlarmSchedulePlanner.shiftCalendarReminderLines(
+                startDateMs = shiftStartMs,
+                cycleDays = shiftCycleDays,
+                daySummaries = shiftDaySummaries,
+                targetDateMs = now.timeInMillis
+            )
+            if (reminderLines.isEmpty()) {
+                addView(TextView(context).apply {
+                    text = "本日休息"
+                    textSize = 14.5f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(0xFFCBD5E1.toInt())
+                    setPadding(0, dp(14), 0, 0)
+                })
+            } else {
+                reminderLines.forEachIndexed { index, line ->
+                    addView(TextView(context).apply {
+                        text = "提醒时间：$line"
+                        textSize = 14.5f
+                        typeface = Typeface.DEFAULT_BOLD
+                        setTextColor(FeatureType.SHIFT.accent)
+                        setPadding(0, if (index == 0) dp(14) else dp(12), 0, 0)
+                    })
+                }
+            }
+        })
+    }
+
+    private fun calendarGrid(month: Calendar, shiftStartMs: Long): View {
+        val grid = GridLayout(this).apply {
+            columnCount = 7
+            background = rounded(0xFFFFFFFF.toInt(), dp(8))
+            setPadding(dp(8), dp(8), dp(8), dp(10))
+        }
+        listOf("一", "二", "三", "四", "五", "六", "日").forEachIndexed { index, label ->
+            grid.addView(calendarCell(label, "", false, false, index >= 5, true), gridParams())
+        }
+        val cal = month.clone() as Calendar
+        cal.set(Calendar.DAY_OF_MONTH, 1)
+        val firstOffset = (cal.get(Calendar.DAY_OF_WEEK) + 5) % 7
+        repeat(firstOffset) { grid.addView(calendarCell("", "", false, false), gridParams()) }
+        val max = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
+        for (day in 1..max) {
+            val summary = shiftDayCardSummary(
+                UiAlarmSchedulePlanner.shiftCalendarSummary(
+                    startDateMs = shiftStartMs,
+                    cycleDays = shiftCycleDays,
+                    daySummaries = shiftDaySummaries,
+                    targetDateMs = cal.timeInMillis
+                )
+            )
+            val selected = day == selectedCalendarDay.get(Calendar.DAY_OF_MONTH) &&
+                cal.get(Calendar.MONTH) == selectedCalendarDay.get(Calendar.MONTH) &&
+                cal.get(Calendar.YEAR) == selectedCalendarDay.get(Calendar.YEAR)
+            val weekend = cal.get(Calendar.DAY_OF_WEEK) == Calendar.SATURDAY || cal.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY
+            val cellDay = cal.clone() as Calendar
+            grid.addView(calendarCell(day.toString(), summary, selected, summary == "休", weekend, false).apply {
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    selectedCalendarDay = cellDay
+                    renderCalendar()
+                }
+            }, gridParams())
+            cal.add(Calendar.DAY_OF_MONTH, 1)
+        }
+        return grid
+    }
+
+    private fun gridParams(): GridLayout.LayoutParams =
+        GridLayout.LayoutParams().apply {
+            width = 0
+            height = dp(54)
+            columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+            setMargins(0, 0, 0, dp(3))
+        }
+
+    private fun calendarCell(day: String, summary: String, selected: Boolean, rest: Boolean, weekend: Boolean = false, header: Boolean = false): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+            background = if (selected) rounded(0x00FFFFFF, dp(8), FeatureType.SHIFT.accent) else null
+            isHapticFeedbackEnabled = false
+            isSoundEffectsEnabled = false
+            setPadding(dp(1), 0, dp(1), 0)
+            addView(TextView(context).apply {
+                text = day
+                textSize = if (header) 13f else 14f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+                includeFontPadding = false
+                setTextColor(when {
+                    header && weekend -> 0xFFFF7A59.toInt()
+                    header -> 0xFF64748B.toInt()
+                    rest -> 0xFFFF8A70.toInt()
+                    weekend -> 0xFFE8795E.toInt()
+                    else -> 0xFF111827.toInt()
+                })
+            }, LinearLayout.LayoutParams(-1, -2))
+            addView(TextView(context).apply {
+                text = summary
+                textSize = 10.5f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+                includeFontPadding = false
+                setTextColor(if (rest) 0xFFCBD5E1.toInt() else FeatureType.SHIFT.accent)
+            }, LinearLayout.LayoutParams(-1, -2))
+        }
+    }
+
+    private fun renderMine() {
+        val column = baseScroll("我的")
+        column.addView(card().apply {
+            setPadding(dp(16), dp(15), dp(16), dp(15))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                startActivity(Intent(this@AlarmListActivity, ReliabilityCheckActivity::class.java))
+            }
+            addView(TextView(context).apply {
+                text = "必要权限"
+                textSize = 17f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFF111827.toInt())
+            })
+            addView(TextView(context).apply {
+                text = if (collectCoreReliabilityIssues().isEmpty()) "核心权限状态正常" else "建议检查通知、悬浮窗、电池优化等权限"
+                textSize = 13.5f
+                setTextColor(0xFF8EA0B8.toInt())
+                setPadding(0, dp(8), 0, dp(14))
+            })
+            addView(buttonText("去检查权限", 0xFF4A6CF7.toInt()) {
+                startActivity(Intent(this@AlarmListActivity, ReliabilityCheckActivity::class.java))
+            })
+        })
+        column.addView(card().apply {
+            setPadding(dp(16), dp(15), dp(16), dp(15))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { showReliabilityTips() }
+            addView(TextView(context).apply {
+                text = "⏰ 保持闹钟可靠"
+                textSize = 17f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFF111827.toInt())
+            })
+            addView(TextView(context).apply {
+                text = "了解如何确保闹钟准时响起，避免常见问题。"
+                textSize = 13.5f
+                setTextColor(0xFF8EA0B8.toInt())
+                setPadding(0, dp(8), 0, 0)
+            })
+        })
+        column.addView(card().apply {
+            setPadding(dp(16), dp(15), dp(16), dp(15))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { showHelpAndPrivacyDialog() }
+            addView(TextView(context).apply {
+                text = "使用手册与隐私安全"
+                textSize = 17f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFF111827.toInt())
+            })
+            addView(TextView(context).apply {
+                text = "查看使用说明、隐私原则、权限用途和版本信息。"
+                textSize = 13.5f
+                setTextColor(0xFF8EA0B8.toInt())
+                setPadding(0, dp(8), 0, 0)
+            })
+        })
+    }
+
+    private fun card(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = rounded(0xFFFFFFFF.toInt(), dp(12))
+        elevation = dp(1).toFloat()
+        layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+            bottomMargin = dp(11)
+        }
+    }
+
+    private fun typeBadge(type: FeatureType): TextView = TextView(this).apply {
+        text = type.tag
+        textSize = 15f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(type.accent)
+        background = rounded(type.tint, dp(6))
+        setPadding(dp(8), dp(4), dp(8), dp(4))
+        layoutParams = LinearLayout.LayoutParams(-2, -2).apply {
+            rightMargin = dp(6)
+        }
+    }
+
+    private fun iconTile(feature: FeatureType): View = ImageView(this).apply {
+        setImageResource(feature.iconRes)
+        layoutParams = LinearLayout.LayoutParams(dp(46), dp(46))
+    }
+
+    private fun regularRepeatOptionRow(label: String, selected: Boolean, accent: Int, onClick: () -> Unit): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(13), dp(16), dp(13))
+            isClickable = true
+            isFocusable = true
+            isHapticFeedbackEnabled = false
+            isSoundEffectsEnabled = false
+            setOnClickListener { onClick() }
+            addView(TextView(context).apply {
+                text = label
+                textSize = 15f
+                setTextColor(0xFF111827.toInt())
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(TextView(context).apply {
+                text = if (selected) "✓" else ""
+                textSize = 15f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFCBD5E1.toInt())
+                background = rounded(if (selected) accent else 0x00FFFFFF, dp(18), if (selected) accent else 0xFFCBD5E1.toInt())
+            }, LinearLayout.LayoutParams(dp(28), dp(28)))
+        }
+    }
+
+    private fun vibrationButtonRow(feature: FeatureType): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            background = rounded(0xFFFFFFFF.toInt(), dp(0))
+            isHapticFeedbackEnabled = false
+            isSoundEffectsEnabled = false
+            addView(TextView(context).apply {
+                text = "响铃时振动"
+                textSize = 15f
+                setTextColor(0xFF111827.toInt())
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(MaterialSwitch(context).apply {
+                isChecked = vibrationEnabled
+                setOnCheckedChangeListener { _, checked ->
+                    vibrationEnabled = checked
+                    saveUiState()
+                    renderEdit(feature)
+                }
+            })
+            setOnClickListener {
+                val switch = getChildAt(1) as MaterialSwitch
+                switch.isChecked = !switch.isChecked
+            }
+        }
+    }
+
+    private fun settingsRow(label: String, value: String, arrow: Boolean, onClick: (() -> Unit)? = null): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            background = rounded(0xFFFFFFFF.toInt(), dp(0))
+            if (onClick != null) {
+                isClickable = true
+                isFocusable = true
+                isHapticFeedbackEnabled = false
+                isSoundEffectsEnabled = false
+                setOnClickListener { onClick() }
+            }
+            addView(TextView(context).apply {
+                text = label
+                textSize = 15f
+                setTextColor(0xFF111827.toInt())
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(TextView(context).apply {
+                text = value
+                textSize = 14f
+                setTextColor(if (value == "✓") 0xFF4A6CF7.toInt() else 0xFF8EA0B8.toInt())
+                gravity = Gravity.RIGHT
+            })
+            if (arrow) addView(TextView(context).apply {
+                text = "›"
+                textSize = 22f
+                setTextColor(0xFFC7D0DD.toInt())
+                setPadding(dp(4), 0, 0, 0)
+            })
+        }
+    }
+
+    private fun ringtoneSettingsRow(feature: FeatureType): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            background = rounded(0xFFFFFFFF.toInt(), dp(0))
+            isClickable = true
+            isFocusable = true
+            isHapticFeedbackEnabled = false
+            isSoundEffectsEnabled = false
+            setOnClickListener { openSystemRingtonePicker() }
+            addView(TextView(context).apply {
+                text = "铃声"
+                textSize = 15f
+                setTextColor(0xFF111827.toInt())
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(TextView(context).apply {
+                text = ringtoneSummary
+                textSize = 14f
+                setTextColor(0xFF8EA0B8.toInt())
+                gravity = Gravity.RIGHT
+                maxLines = 1
+            })
+            addView(TextView(context).apply {
+                text = if (isPlayingPreview) "■" else "▷"
+                textSize = 18f
+                setTextColor(0xFFB8C0CC.toInt())
+                gravity = Gravity.CENTER
+                isClickable = true
+                isFocusable = true
+                isHapticFeedbackEnabled = false
+                isSoundEffectsEnabled = false
+                setOnClickListener {
+                    toggleRingtonePreview()
+                    renderEdit(feature)
+                }
+            }, LinearLayout.LayoutParams(dp(30), dp(36)))
+            addView(TextView(context).apply {
+                text = "›"
+                textSize = 22f
+                setTextColor(0xFFC7D0DD.toInt())
+                setPadding(dp(4), 0, 0, 0)
+            })
+        }
+    }
+
+    private fun sectionTitle(text: String): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 13f
+        setTextColor(0xFF94A3B8.toInt())
+        setPadding(0, dp(14), 0, dp(8))
+    }
+
+    private fun defaultAlarmName(feature: FeatureType): String =
+        when (feature) {
+            FeatureType.REGULAR -> "工作日提醒"
+            FeatureType.SPECIAL -> "特殊周期提醒"
+            FeatureType.SHIFT -> "轮班闹钟"
+            FeatureType.LUNAR -> "农历生日提醒"
+        }
+
+    private fun alarmTitle(feature: FeatureType): String = alarmTitles[feature] ?: defaultAlarmName(feature)
+
+    private fun medicineNameText(feature: FeatureType): String =
+        medNames[feature]?.ifEmpty { "未设置" } ?: "未设置"
+
+    private fun showMedicineNameDialog(feature: FeatureType) {
+        val input = EditText(this).apply {
+            setText(medNames[feature] ?: "")
+            hint = "如：阿莫西林、降压药"
+            inputType = InputType.TYPE_CLASS_TEXT
+            setSingleLine(true)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("药品名称")
+            .setView(input)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("确定") { _, _ ->
+                val next = input.text.toString().trim()
+                medNames[feature] = next
+                saveUiState()
+                renderEdit(feature)
+            }
+            .show()
+    }
+
+    private fun timeText(): String = String.format("%02d:%02d", editHour, editMinute)
+
+    private fun featureTime(feature: FeatureType): Pair<Int, Int> {
+        return featureEditTimes[feature] ?: when (feature) {
+            FeatureType.REGULAR -> 8 to 0
+            FeatureType.SPECIAL -> 8 to 0
+            FeatureType.SHIFT -> 8 to 0
+            FeatureType.LUNAR -> 8 to 0
+        }
+    }
+
+    private fun featureTimeText(feature: FeatureType): String {
+        val (hour, minute) = featureTime(feature)
+        return String.format("%02d:%02d", hour, minute)
+    }
+
+    private fun shiftPreviewTimeText(): String = UiAlarmSchedulePlanner.shiftPreviewTimeText(shiftDaySummaries)
+
+    private fun setFeatureTime(feature: FeatureType, hour: Int, minute: Int) {
+        if (feature == FeatureType.SHIFT) return
+        featureEditTimes[feature] = hour to minute
+        editHour = hour
+        editMinute = minute
+    }
+
+    private fun dateText(feature: FeatureType): String {
+        val cal = alarmDates[feature] ?: Calendar.getInstance()
+        return SimpleDateFormat("yyyy-M-d E", Locale.CHINA).format(cal.time)
+    }
+
+    private fun specialRepeatText(): String {
+        if (specialRepeatUnit == "时分") {
+            return when {
+                specialRepeatHours > 0 && specialRepeatMinutes > 0 -> "每 $specialRepeatHours 小时 $specialRepeatMinutes 分钟"
+                specialRepeatHours > 0 -> "每 $specialRepeatHours 小时"
+                else -> "每 $specialRepeatMinutes 分钟"
+            }
+        }
+        return if (specialRepeatUnit == "周" && specialWeekdaySelections.isNotEmpty()) {
+            "每 $specialRepeatValue 周 ${specialWeekdaySelections.joinToString("、")}"
+        } else {
+            "每 $specialRepeatValue $specialRepeatUnit"
+        }
+    }
+
+    private fun syncShiftDaysToCycle() {
+        shiftCycleDays = shiftCycleDays.coerceIn(1, 31)
+        while (shiftDaySummaries.size < shiftCycleDays) shiftDaySummaries.add("休")
+        while (shiftDaySummaries.size > shiftCycleDays) shiftDaySummaries.removeAt(shiftDaySummaries.lastIndex)
+    }
+
+    private fun replaceScheduledAlarmsForFeature(feature: FeatureType): Int {
+        cancelScheduledAlarmsForFeature(feature)
+        val plans = schedulePlansForFeature(feature)
+        plans.forEach { plan ->
+            AlarmScheduler.schedule(
+                this,
+                AlarmScheduler.AlarmData(
+                    id = plan.id,
+                    hour = plan.hour,
+                    minute = plan.minute,
+                    intervalDays = plan.intervalDays,
+                    repeatMinutes = plan.repeatMinutes,
+                    repeatMonths = plan.repeatMonths,
+                    startDateMs = plan.startDateMs,
+                    ringtoneUri = plan.ringtoneUri,
+                    label = plan.label,
+                    note = plan.note,
+                    medicineName = plan.medicineName,
+                    vibrate = plan.vibrate,
+                    isActive = true
+                )
+            )
+        }
+        return plans.size
+    }
+
+    private fun cancelScheduledAlarmsForFeature(feature: FeatureType) {
+        val prefix = "alarm_ui_${feature.name.lowercase(Locale.US)}_"
+        AlarmScheduler.getAllAlarms(this)
+            .filter { it.id.startsWith(prefix) }
+            .forEach { AlarmScheduler.deleteAlarm(this, it.id) }
+    }
+
+    private fun schedulePlansForFeature(feature: FeatureType): List<UiAlarmSchedulePlanner.SchedulePlan> {
+        val enabled = alarmActive[feature] == true
+        val label = alarmTitle(feature)
+        val medName = medNames[feature] ?: ""
+        val dateMs = (alarmDates[feature] ?: Calendar.getInstance()).timeInMillis
+        val (hour, minute) = featureTime(feature)
+        return when (feature) {
+            FeatureType.REGULAR -> UiAlarmSchedulePlanner.planRegular(
+                enabled = enabled,
+                hour = hour,
+                minute = minute,
+                label = label,
+                ringtoneUri = selectedRingtoneUri,
+                vibrate = vibrationEnabled,
+                selectedRules = regularRepeatSelections,
+                selectedDateMs = dateMs
+            )
+            FeatureType.SPECIAL -> UiAlarmSchedulePlanner.planSpecial(
+                enabled = enabled,
+                hour = hour,
+                minute = minute,
+                label = label,
+                ringtoneUri = selectedRingtoneUri,
+                vibrate = vibrationEnabled,
+                unit = specialRepeatUnit,
+                value = specialRepeatValue,
+                hours = specialRepeatHours,
+                minutes = specialRepeatMinutes,
+                selectedWeekdays = specialWeekdaySelections,
+                startDateMs = dateMs,
+                medicineName = medName
+            )
+            FeatureType.SHIFT -> UiAlarmSchedulePlanner.planShift(
+                enabled = enabled,
+                cycleDays = shiftCycleDays,
+                startDateMs = dateMs,
+                daySummaries = shiftDaySummaries,
+                label = label,
+                ringtoneUri = selectedRingtoneUri,
+                vibrate = vibrationEnabled,
+                medicineName = medName
+            )
+            FeatureType.LUNAR -> emptyList()
+        }
+    }
+
+    private fun saveResultText(feature: FeatureType, scheduledCount: Int): String =
+        if (scheduledCount > 0) {
+            "${feature.title} 已保存并开启提醒"
+        } else {
+            "${feature.title} 已保存，当前规则暂未接入系统提醒"
+        }
+
+    // ── Bulk delete support ──
+    private fun deleteToolbar(): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), 0, dp(8), dp(12))
+            addView(TextView(context).apply {
+                text = "取消"
+                textSize = 14f
+                setTextColor(0xFF8EA0B8.toInt())
+                setPadding(dp(8), dp(8), dp(16), dp(8))
+                setOnClickListener {
+                    isAlarmDeleteMode = false
+                    checkedAlarmTypes.clear()
+                    renderAlarmList()
+                }
+            })
+            addView(View(context), LinearLayout.LayoutParams(0, 1, 1f))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(12), dp(4), dp(12), dp(4))
+                isClickable = true
+                isFocusable = true
+                isHapticFeedbackEnabled = false
+                isSoundEffectsEnabled = false
+                val accentColor = if (checkedAlarmTypes.isEmpty()) 0xFFCBD5E1.toInt() else 0xFF4A6CF7.toInt()
+                addView(TextView(context).apply {
+                    text = "🗑"
+                    textSize = 22f
+                    gravity = Gravity.CENTER
+                })
+                addView(TextView(context).apply {
+                    text = "删除"
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                    setTextColor(accentColor)
+                })
+                setOnClickListener {
+                    if (checkedAlarmTypes.isNotEmpty()) deleteCheckedAlarms()
+                }
+            })
+        }
+    }
+
+    private fun deleteCheckedAlarms() {
+        val toDelete = checkedAlarmTypes.toList()
+        for (feature in toDelete) {
+            hiddenFeatureTypes.add(feature)
+            alarmActive[feature] = false
+            cancelScheduledAlarmsForFeature(feature)
+        }
+        checkedAlarmTypes.clear()
+        isAlarmDeleteMode = false
+        saveUiState()
+        renderAlarmList()
+        Toast.makeText(this, "已删除 ${toDelete.size} 个闹钟", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun deleteFeatureWithUndo(feature: FeatureType) {
+        val hadActive = alarmActive[feature] == true
+        hiddenFeatureTypes.add(feature)
+        alarmActive[feature] = false
+        isAlarmDeleteMode = false
+        cancelScheduledAlarmsForFeature(feature)
+        saveUiState()
+        renderAlarmList()
+        Snackbar.make(content, "已删除闹钟", Snackbar.LENGTH_LONG)
+            .setAction("撤销") {
+                hiddenFeatureTypes.remove(feature)
+                alarmActive[feature] = hadActive
+                saveUiState()
+                if (hadActive) replaceScheduledAlarmsForFeature(feature)
+                renderAlarmList()
+            }
+            .show()
+    }
+
+    private fun loadUiState() {
+        editHour = statePrefs.getInt("editHour", editHour)
+        editMinute = statePrefs.getInt("editMinute", editMinute)
+        FeatureType.values().forEach { feature ->
+            if (feature == FeatureType.SHIFT) return@forEach
+            val hourKey = "timeHour_${feature.name}"
+            val minuteKey = "timeMinute_${feature.name}"
+            val savedHour = statePrefs.getInt(hourKey, editHour)
+            val savedMinute = statePrefs.getInt(minuteKey, editMinute)
+            featureEditTimes[feature] = savedHour to savedMinute
+        }
+        shiftCycleDays = statePrefs.getInt("shiftCycleDays", shiftCycleDays)
+        statePrefs.getString("shiftDaySummaries", null)?.let {
+            shiftDaySummaries.clear()
+            shiftDaySummaries.addAll(it.split("|").filter { item -> item.isNotBlank() })
+        }
+        FeatureType.values().forEach { feature ->
+            statePrefs.getString("title_${feature.name}", null)?.let { alarmTitles[feature] = it }
+            statePrefs.getString("med_${feature.name}", null)?.let { medNames[feature] = it }
+            alarmActive[feature] = statePrefs.getBoolean("active_${feature.name}", alarmActive[feature] == true)
+            val millis = statePrefs.getLong("date_${feature.name}", -1L)
+            if (millis > 0L) alarmDates[feature] = Calendar.getInstance().apply { timeInMillis = millis }
+        }
+        statePrefs.getString("hiddenFeatureTypes", null)?.let {
+            hiddenFeatureTypes.clear()
+            hiddenFeatureTypes.addAll(
+                it.split("|")
+                    .mapNotNull { name -> runCatching { FeatureType.valueOf(name) }.getOrNull() }
+            )
+        }
+        if (alarmTitles[FeatureType.SPECIAL] == "复诊提醒") {
+            alarmTitles[FeatureType.SPECIAL] = "特殊周期提醒"
+        }
+        ringtoneSummary = statePrefs.getString("ringtoneSummary", ringtoneSummary) ?: ringtoneSummary
+        selectedRingtoneUri = statePrefs.getString("selectedRingtoneUri", selectedRingtoneUri)
+        vibrationEnabled = statePrefs.getBoolean("vibrationEnabled", vibrationEnabled)
+        ringDurationMinutes = statePrefs.getInt("ringDurationMinutes", ringDurationMinutes)
+        snoozeMinutes = statePrefs.getInt("snoozeMinutes", snoozeMinutes)
+        regularRepeatSummary = statePrefs.getString("regularRepeatSummary", regularRepeatSummary) ?: regularRepeatSummary
+        statePrefs.getString("regularRepeatSelections", null)?.let {
+            regularRepeatSelections.clear()
+            regularRepeatSelections.addAll(it.split("|").filter { item -> item.isNotBlank() })
+        }
+        specialRepeatValue = statePrefs.getInt("specialRepeatValue", specialRepeatValue)
+        specialRepeatUnit = statePrefs.getString("specialRepeatUnit", specialRepeatUnit) ?: specialRepeatUnit
+        if (specialRepeatUnit == "分钟" || specialRepeatUnit == "小时") specialRepeatUnit = "时分"
+        specialRepeatHours = statePrefs.getInt("specialRepeatHours", specialRepeatHours)
+        specialRepeatMinutes = statePrefs.getInt("specialRepeatMinutes", specialRepeatMinutes)
+        specialRepeatValue = specialRepeatValue.coerceIn(specialRepeatRange(specialRepeatUnit))
+        statePrefs.getString("specialWeekdaySelections", null)?.let {
+            specialWeekdaySelections.clear()
+            specialWeekdaySelections.addAll(it.split("|").filter { item -> item.isNotBlank() })
+        }
+        lunarDateSummary = statePrefs.getString("lunarDateSummary", lunarDateSummary) ?: lunarDateSummary
+        lunarRepeatSummary = statePrefs.getString("lunarRepeatSummary", lunarRepeatSummary) ?: lunarRepeatSummary
+    }
+
+    private fun saveUiState() {
+        statePrefs.edit()
+            .putInt("editHour", editHour)
+            .putInt("editMinute", editMinute)
+            .apply {
+                FeatureType.values().forEach { feature ->
+                    if (feature == FeatureType.SHIFT) return@forEach
+                    val (hour, minute) = featureTime(feature)
+                    putInt("timeHour_${feature.name}", hour)
+                    putInt("timeMinute_${feature.name}", minute)
+                }
+            }
+            .putInt("shiftCycleDays", shiftCycleDays)
+            .putString("shiftDaySummaries", shiftDaySummaries.joinToString("|"))
+            .putString("ringtoneSummary", ringtoneSummary)
+            .putString("selectedRingtoneUri", selectedRingtoneUri)
+            .putBoolean("vibrationEnabled", vibrationEnabled)
+            .putInt("ringDurationMinutes", ringDurationMinutes)
+            .putInt("snoozeMinutes", snoozeMinutes)
+            .putString("regularRepeatSummary", regularRepeatSummary)
+            .putString("regularRepeatSelections", regularRepeatSelections.joinToString("|"))
+            .putInt("specialRepeatValue", specialRepeatValue)
+            .putString("specialRepeatUnit", specialRepeatUnit)
+            .putInt("specialRepeatHours", specialRepeatHours)
+            .putInt("specialRepeatMinutes", specialRepeatMinutes)
+            .putString("specialWeekdaySelections", specialWeekdaySelections.joinToString("|"))
+            .putString("lunarDateSummary", lunarDateSummary)
+            .putString("lunarRepeatSummary", lunarRepeatSummary)
+            .putString("hiddenFeatureTypes", hiddenFeatureTypes.joinToString("|") { it.name })
+            .apply {
+                FeatureType.values().forEach { feature ->
+                    putString("title_${feature.name}", alarmTitle(feature))
+                    medNames[feature]?.takeIf { it.isNotEmpty() }?.let { putString("med_${feature.name}", it) }
+                    putBoolean("active_${feature.name}", alarmActive[feature] == true)
+                    alarmDates[feature]?.let { putLong("date_${feature.name}", it.timeInMillis) }
+                }
+            }
+            .apply()
+    }
+
+    private fun pill(text: String, selected: Boolean, accent: Int): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 13f
+        gravity = Gravity.CENTER
+        isHapticFeedbackEnabled = false
+        isSoundEffectsEnabled = false
+        setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFF64748B.toInt())
+        background = rounded(if (selected) accent else 0xFFF1F5F9.toInt(), dp(16))
+        setPadding(dp(12), dp(7), dp(12), dp(7))
+        layoutParams = LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(4), dp(4), dp(4), dp(4)) }
+    }
+
+    private fun buttonText(text: String, accent: Int, onClick: () -> Unit): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 14.5f
+        typeface = Typeface.DEFAULT_BOLD
+        gravity = Gravity.CENTER
+        isHapticFeedbackEnabled = false
+        isSoundEffectsEnabled = false
+        setTextColor(0xFFFFFFFF.toInt())
+        background = rounded(accent, dp(10))
+        setPadding(0, dp(11), 0, dp(11))
+        setOnClickListener { onClick() }
+    }
+
+    private fun rounded(color: Int, radius: Int, strokeColor: Int? = null, dashed: Boolean = false): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = radius.toFloat()
+            if (strokeColor != null) {
+                if (dashed) setStroke(dp(1), strokeColor, dp(6).toFloat(), dp(4).toFloat())
+                else setStroke(dp(1), strokeColor)
+            }
+        }
+
+    private fun withAlpha(color: Int, alpha: Int): Int = (color and 0x00FFFFFF) or (alpha shl 24)
+
+    private fun todayText(): String = SimpleDateFormat("yyyy-M-d E", Locale.CHINA).format(Calendar.getInstance().time)
+
+    private fun weekName(calendar: Calendar): String = SimpleDateFormat("E", Locale.CHINA).format(calendar.time)
+
+    @Suppress("DEPRECATION")
+    private fun currentVersionName(): String =
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0.13"
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
+
+    private fun collectCoreReliabilityIssues(): List<String> {
+        val issues = mutableListOf<String>()
+        if (!NotificationManagerCompat.from(this).areNotificationsEnabled()) issues += "通知"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) issues += "悬浮窗"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val powerMgr = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!powerMgr.isIgnoringBatteryOptimizations(packageName)) issues += "电池优化"
+        }
+        return issues
+    }
+
+    /**
+     * First-launch onboarding: guide the user through the 3 most critical permissions
+     * one step at a time. Each step can be skipped. Steps only show when the
+     * corresponding permission is actually missing.
+     */
+    private fun maybeShowReliabilityStarter() {
+        val prefs = getSharedPreferences("reliability_setup", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("onboarding_completed", false)) return
+
+        // Collect steps that are not yet satisfied
+        val steps = mutableListOf<Pair<String, () -> Unit>>()
+
+        if (!NotificationManagerCompat.from(this).areNotificationsEnabled()) {
+            steps.add("通知权限" to {
+                val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                } else {
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(Uri.parse("package:$packageName"))
+                }
+                try { startActivity(intent) } catch (_: Exception) {}
+            })
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                steps.add("电池优化" to {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                        .setData(Uri.parse("package:$packageName"))
+                    try { startActivity(intent) } catch (_: Exception) {}
+                })
+            }
+        }
+
+        // Always include the final "complete setup" step
+        steps.add("完成设置" to {
+            startActivity(Intent(this, ReliabilityCheckActivity::class.java))
+        })
+
+        if (steps.isEmpty()) {
+            prefs.edit().putBoolean("onboarding_completed", true).apply()
+            return
+        }
+
+        showOnboardingStep(prefs, steps, 0)
+    }
+
+    private fun showOnboardingStep(
+        prefs: android.content.SharedPreferences,
+        steps: List<Pair<String, () -> Unit>>,
+        index: Int
+    ) {
+        if (index >= steps.size) {
+            prefs.edit().putBoolean("onboarding_completed", true).apply()
+            return
+        }
+
+        val (title, action) = steps[index]
+        val isLast = index == steps.size - 1
+
+        val descriptions = mapOf(
+            "通知权限" to "闹钟触发时需要通知权限来显示响铃提醒和备注信息。",
+            "电池优化" to "关闭电池优化可以防止锁屏后系统自动关闭闹钟，确保准时响铃。",
+            "完成设置" to "最后一步：检查所有权限是否就绪，并测试闹钟是否正常。"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("${index + 1}/${steps.size}  $title")
+            .setMessage(descriptions[title] ?: "")
+            .setPositiveButton(if (isLast) "去完成" else "去设置") { _, _ ->
+                action()
+                showOnboardingStep(prefs, steps, index + 1)
+            }
+            .setNegativeButton(if (isLast) "稍后" else "跳过") { _, _ ->
+                showOnboardingStep(prefs, steps, index + 1)
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun maybeShowReliabilityReminder() {
+        val issues = collectCoreReliabilityIssues()
+        if (issues.isEmpty()) return
+        AlertDialog.Builder(this)
+            .setTitle("建议先完善必要权限")
+            .setMessage("当前还需检查：${issues.joinToString("、")}。这些权限会影响锁屏、后台和低电量场景下的闹钟提醒可靠性。")
+            .setPositiveButton("去检查") { _, _ ->
+                startActivity(Intent(this, ReliabilityCheckActivity::class.java))
+            }
+            .setNegativeButton("稍后", null)
+            .show()
+    }
 }
