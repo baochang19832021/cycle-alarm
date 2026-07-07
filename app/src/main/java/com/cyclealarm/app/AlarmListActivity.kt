@@ -109,6 +109,17 @@ class AlarmListActivity : AppCompatActivity() {
         val active: Boolean
     )
 
+    private data class AlarmInstance(
+        val id: String = java.util.UUID.randomUUID().toString(),
+        val type: FeatureType,
+        val title: String,
+        val hour: Int = 8,
+        val minute: Int = 0,
+        val dateMs: Long = 0L,
+        val active: Boolean = true,
+        val config: Map<String, String> = emptyMap()
+    )
+
     private val root by lazy { LinearLayout(this) }
     private val content by lazy { FrameLayout(this) }
     private val statePrefs by lazy { getSharedPreferences(UI_STATE_PREFS, Context.MODE_PRIVATE) }
@@ -117,37 +128,18 @@ class AlarmListActivity : AppCompatActivity() {
 
     private var editHour = 8
     private var editMinute = 0
-    private val featureEditTimes = mutableMapOf(
-        FeatureType.REGULAR to (8 to 0),
-        FeatureType.SPECIAL to (8 to 0),
-        FeatureType.LUNAR to (8 to 0)
-    )
     private var shiftCycleDays = 4
     private val shiftDaySummaries = mutableListOf("07:30", "07:30 +1", "19:30", "休")
     private var deleteShiftDayIndex: Int? = null
     private var selectedCalendarDay: Calendar = Calendar.getInstance()
-    private val alarmTitles = mutableMapOf(
-        FeatureType.REGULAR to "工作日提醒",
-        FeatureType.SPECIAL to "特殊周期提醒",
-        FeatureType.SHIFT to "轮班闹钟",
-        FeatureType.LUNAR to "农历生日提醒"
-    )
-    private val medNames = mutableMapOf<FeatureType, String>()
-    private val alarmDates = mutableMapOf<FeatureType, Calendar>()
-    private val alarmActive = mutableMapOf(
-        FeatureType.REGULAR to true,
-        FeatureType.SPECIAL to true,
-        FeatureType.SHIFT to false,
-        FeatureType.LUNAR to true
-    )
+    private val alarmInstances = mutableListOf<AlarmInstance>()
     private var ringtoneSummary = "默认铃声"
     private var selectedRingtoneUri: String? = null
     private var mediaPlayer: MediaPlayer? = null
     private var isPlayingPreview = false
-    private var currentEditingFeature: FeatureType? = null
-    private val hiddenFeatureTypes = mutableSetOf<FeatureType>()
+    private var currentEditingInstanceId: String? = null
     private var isAlarmDeleteMode = false
-    private val checkedAlarmTypes = mutableSetOf<FeatureType>()
+    private val checkedInstanceIds = mutableSetOf<String>()
     private var vibrationEnabled = true
     private var ringDurationMinutes = 1
     private var snoozeMinutes = 5
@@ -174,7 +166,7 @@ class AlarmListActivity : AppCompatActivity() {
             selectedRingtoneUri = uri?.toString()
             ringtoneSummary = if (uri != null) getDisplayNameFromUri(uri) else "系统默认"
             saveUiState()
-            currentEditingFeature?.let { renderEdit(it) }
+            currentEditingInstanceId?.let { renderEdit(it) }
         }
     }
 
@@ -194,7 +186,7 @@ class AlarmListActivity : AppCompatActivity() {
             selectedRingtoneUri = uri.toString()
             ringtoneSummary = getDisplayNameFromUri(uri)
             saveUiState()
-            currentEditingFeature?.let { renderEdit(it) }
+            currentEditingInstanceId?.let { renderEdit(it) }
         }
     }
 
@@ -301,7 +293,7 @@ class AlarmListActivity : AppCompatActivity() {
 
     private fun selectTab(tab: Tab) {
         currentTab = tab
-        if (tab != Tab.ALARMS) { isAlarmDeleteMode = false; checkedAlarmTypes.clear() }
+        if (tab != Tab.ALARMS) { isAlarmDeleteMode = false; checkedInstanceIds.clear() }
         navItems.forEach { (itemTab, view) ->
             val selected = itemTab == tab
             val color = if (selected) 0xFF4A6CF7.toInt() else 0xFF9CA3AF.toInt()
@@ -374,14 +366,18 @@ class AlarmListActivity : AppCompatActivity() {
     private fun renderAlarmList() {
         val column = baseScroll("闹钟")
         if (isAlarmDeleteMode) {
-            column.addView(deleteToolbar(), 1) // index 1 = right after header
+            column.addView(deleteToolbar(), 1)
         }
-        val demos = listOf(
-            DemoAlarm(alarmTitle(FeatureType.SPECIAL), FeatureType.SPECIAL, featureTimeText(FeatureType.SPECIAL), "下次响铃：${dateText(FeatureType.SPECIAL)}", specialRepeatText(), alarmActive[FeatureType.SPECIAL] == true),
-            DemoAlarm(alarmTitle(FeatureType.REGULAR), FeatureType.REGULAR, featureTimeText(FeatureType.REGULAR), "下次响铃：${dateText(FeatureType.REGULAR)}", regularRepeatSummary, alarmActive[FeatureType.REGULAR] == true),
-            DemoAlarm(alarmTitle(FeatureType.SHIFT), FeatureType.SHIFT, shiftPreviewTimeText(), "下次响铃：第3天", "每轮 $shiftCycleDays 天", alarmActive[FeatureType.SHIFT] == true),
-            DemoAlarm(alarmTitle(FeatureType.LUNAR), FeatureType.LUNAR, featureTimeText(FeatureType.LUNAR), "下次响铃：$lunarDateSummary", lunarRepeatSummary, alarmActive[FeatureType.LUNAR] == true)
-        ).filterNot { it.type in hiddenFeatureTypes }
+        val demos = alarmInstances.map { inst ->
+            DemoAlarm(
+                title = inst.title,
+                type = inst.type,
+                time = String.format("%02d:%02d", inst.hour, inst.minute),
+                next = alarmInstanceNextText(inst),
+                rule = alarmInstanceRuleText(inst),
+                active = inst.active
+            )
+        }
         if (demos.isEmpty()) {
             column.addView(TextView(this).apply {
                 text = "暂无闹钟"
@@ -391,7 +387,9 @@ class AlarmListActivity : AppCompatActivity() {
                 setPadding(0, dp(40), 0, dp(8))
             })
         } else {
-            demos.forEach { column.addView(alarmCard(it)) }
+            demos.forEachIndexed { idx, item ->
+                column.addView(alarmCard(alarmInstances[idx].id, item))
+            }
         }
         // Floating add button (blue circle, white "+")
         if (!isAlarmDeleteMode) {
@@ -408,7 +406,7 @@ class AlarmListActivity : AppCompatActivity() {
                 isSoundEffectsEnabled = false
                 setOnClickListener {
                     isAlarmDeleteMode = false
-                    checkedAlarmTypes.clear()
+                    checkedInstanceIds.clear()
                     renderFunctions()
                 }
             }, FrameLayout.LayoutParams(dp(56), dp(56)).apply {
@@ -419,7 +417,7 @@ class AlarmListActivity : AppCompatActivity() {
         }
     }
 
-    private fun alarmCard(item: DemoAlarm): View {
+    private fun alarmCard(instanceId: String, item: DemoAlarm): View {
         return card().apply {
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
                 leftMargin = dp(8)
@@ -433,16 +431,16 @@ class AlarmListActivity : AppCompatActivity() {
             isSoundEffectsEnabled = false
             setOnClickListener {
                 if (isAlarmDeleteMode) {
-                    if (item.type in checkedAlarmTypes) checkedAlarmTypes.remove(item.type) else checkedAlarmTypes.add(item.type)
+                    if (instanceId in checkedInstanceIds) checkedInstanceIds.remove(instanceId) else checkedInstanceIds.add(instanceId)
                     renderAlarmList()
                 } else {
-                    renderEdit(item.type)
+                    renderEdit(instanceId)
                 }
             }
             setOnLongClickListener {
                 if (!isAlarmDeleteMode) {
                     isAlarmDeleteMode = true
-                    checkedAlarmTypes.add(item.type)
+                    checkedInstanceIds.add(instanceId)
                     renderAlarmList()
                 }
                 true
@@ -461,7 +459,7 @@ class AlarmListActivity : AppCompatActivity() {
                 isSoundEffectsEnabled = false
             })
             if (isAlarmDeleteMode) {
-                val checked = item.type in checkedAlarmTypes
+                val checked = instanceId in checkedInstanceIds
                 top.addView(TextView(context).apply {
                     text = if (checked) "✓" else ""
                     textSize = 15f
@@ -480,14 +478,18 @@ class AlarmListActivity : AppCompatActivity() {
                     scaleY = 0.7f
                     setOnClickListener {
                         val nextChecked = isChecked
-                        alarmActive[item.type] = nextChecked
+                        val idx = alarmInstances.indexOfFirst { it.id == instanceId }
+                        if (idx >= 0) {
+                            alarmInstances[idx] = alarmInstances[idx].copy(active = nextChecked)
+                        }
                         saveUiState()
                         if (nextChecked) {
-                            val scheduledCount = replaceScheduledAlarmsForFeature(item.type)
+                            val inst = alarmInstances.firstOrNull { it.id == instanceId }
+                            val scheduledCount = if (inst != null) replaceScheduledAlarmsForInstance(inst) else 0
                             Toast.makeText(this@AlarmListActivity, saveResultText(item.type, scheduledCount), Toast.LENGTH_SHORT).show()
                             maybeShowReliabilityReminder()
                         } else {
-                            cancelScheduledAlarmsForFeature(item.type)
+                            cancelScheduledAlarmsForInstance(instanceId)
                         }
                         renderAlarmList()
                     }
@@ -545,7 +547,13 @@ class AlarmListActivity : AppCompatActivity() {
             isHapticFeedbackEnabled = false
             isSoundEffectsEnabled = false
             setOnClickListener {
-                renderEdit(feature)
+                val newInstance = AlarmInstance(
+                    type = feature,
+                    title = defaultAlarmName(feature)
+                )
+                alarmInstances.add(newInstance)
+                saveUiState()
+                renderEdit(newInstance.id)
             }
             addView(iconTile(feature))
             addView(LinearLayout(context).apply {
@@ -573,22 +581,34 @@ class AlarmListActivity : AppCompatActivity() {
         }
     }
 
-    private fun renderEdit(feature: FeatureType) {
-        currentEditingFeature = feature
-        val (featureHour, featureMinute) = featureTime(feature)
-        editHour = featureHour
-        editMinute = featureMinute
+    private fun renderEdit(instanceId: String) {
+        val instance = alarmInstances.firstOrNull { it.id == instanceId } ?: return
+        currentEditingInstanceId = instanceId
+        val feature = instance.type
+        editHour = instance.hour
+        editMinute = instance.minute
+        loadConfigFromInstance(instance)
         selectNavOnly(Tab.FUNCTIONS)
         val rootEdit = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xFFFFFFFF.toInt())
         }
         rootEdit.addView(topBar(feature.title, feature.accent, onCancel = { selectTab(Tab.FUNCTIONS) }) {
-            alarmActive[feature] = true
-            hiddenFeatureTypes.remove(feature)
+            // Save: serialize edit state back into instance
+            val updatedConfig = buildConfigForType(feature)
+            val updatedInstance = instance.copy(
+                title = instanceTitle(instanceId) ?: instance.title,
+                hour = editHour,
+                minute = editMinute,
+                dateMs = instanceDateMs(instanceId),
+                active = true,
+                config = updatedConfig
+            )
+            val idx = alarmInstances.indexOfFirst { it.id == instanceId }
+            if (idx >= 0) alarmInstances[idx] = updatedInstance
             isAlarmDeleteMode = false
             saveUiState()
-            val scheduledCount = replaceScheduledAlarmsForFeature(feature)
+            val scheduledCount = replaceScheduledAlarmsForInstance(updatedInstance)
             Toast.makeText(this, saveResultText(feature, scheduledCount), Toast.LENGTH_SHORT).show()
             maybeShowReliabilityReminder()
             selectTab(Tab.ALARMS)
@@ -603,11 +623,12 @@ class AlarmListActivity : AppCompatActivity() {
             setPadding(dp(20), dp(18), dp(20), dp(24))
         }
         if (feature == FeatureType.SHIFT) {
-            column.addView(settingsRow("闹钟名称", alarmTitle(feature), true) { showTitleDialog(feature) })
-            column.addView(settingsRow("开始日期", dateText(feature), true) { showDateDialog(feature, "开始日期") })
+            val instTitle = instance.title
+            column.addView(settingsRow("闹钟名称", instTitle, true) { showTitleDialog(instanceId) })
+            column.addView(settingsRow("开始日期", alarmInstanceDateText(instance), true) { showDateDialog(instanceId, "开始日期") })
             column.addView(settingsRow("周期", "每轮 $shiftCycleDays 天", true) { showShiftCycleDialog() })
-            column.addView(ringtoneSettingsRow(feature))
-            column.addView(vibrationButtonRow(feature))
+            column.addView(ringtoneSettingsRow(instanceId))
+            column.addView(vibrationButtonRow(instanceId))
             column.addView(sectionTitle("排班设置"))
             column.addView(TextView(this).apply {
                 text = "当前每轮 $shiftCycleDays 天，下方按周期显示第1天到第${shiftCycleDays}天"
@@ -619,28 +640,29 @@ class AlarmListActivity : AppCompatActivity() {
             column.addView(shiftDayGrid())
         } else {
             column.addView(timeWheels(editHour, editMinute) { h, m ->
-                setFeatureTime(feature, h, m)
+                editHour = h; editMinute = m
             })
-            column.addView(settingsRow("闹钟名称", alarmTitle(feature), true) { showTitleDialog(feature) })
+            val instTitle = instance.title
+            column.addView(settingsRow("闹钟名称", instTitle, true) { showTitleDialog(instanceId) })
             when (feature) {
                 FeatureType.REGULAR -> {
-                    column.addView(settingsRow("响铃日期", dateText(feature), true) { showDateDialog(feature, "响铃日期") })
-                    column.addView(settingsRow("重复", regularRepeatSummary, true) { showRegularRepeatDialog(feature) })
+                    column.addView(settingsRow("响铃日期", alarmInstanceDateText(instance), true) { showDateDialog(instanceId, "响铃日期") })
+                    column.addView(settingsRow("重复", regularRepeatSummary, true) { showRegularRepeatDialog(instanceId) })
                 }
                 FeatureType.SPECIAL -> {
-                    column.addView(settingsRow("开始日期", dateText(feature), true) { showDateDialog(feature, "开始日期") })
+                    column.addView(settingsRow("开始日期", alarmInstanceDateText(instance), true) { showDateDialog(instanceId, "开始日期") })
                     column.addView(settingsRow("重复周期", specialRepeatText(), true) { showSpecialRepeatDialog(reset = true) })
                 }
                 FeatureType.LUNAR -> {
                     column.addView(settingsRow("农历日期", lunarDateSummary, true) { showLunarDateDialog(feature.accent) })
-                    column.addView(settingsRow("重复", lunarRepeatSummary, true) { showLunarRepeatDialog(feature) })
+                    column.addView(settingsRow("重复", lunarRepeatSummary, true) { showLunarRepeatDialog(instanceId) })
                 }
                 FeatureType.SHIFT -> Unit
             }
-            column.addView(ringtoneSettingsRow(feature))
-            column.addView(vibrationButtonRow(feature))
-            column.addView(settingsRow("响铃时长", "${ringDurationMinutes}分钟", true) { showNumberOptionDialog("响铃时长", ringDurationMinutes, 1..10, "分钟", feature.accent) { ringDurationMinutes = it; renderEdit(feature) } })
-            column.addView(settingsRow("贪睡间隔", "${snoozeMinutes}分钟", true) { showNumberOptionDialog("贪睡间隔", snoozeMinutes, 1..30, "分钟", feature.accent) { snoozeMinutes = it; renderEdit(feature) } })
+            column.addView(ringtoneSettingsRow(instanceId))
+            column.addView(vibrationButtonRow(instanceId))
+            column.addView(settingsRow("响铃时长", "${ringDurationMinutes}分钟", true) { showNumberOptionDialog("响铃时长", ringDurationMinutes, 1..10, "分钟", feature.accent) { ringDurationMinutes = it; renderEdit(instanceId) } })
+            column.addView(settingsRow("贪睡间隔", "${snoozeMinutes}分钟", true) { showNumberOptionDialog("贪睡间隔", snoozeMinutes, 1..30, "分钟", feature.accent) { snoozeMinutes = it; renderEdit(instanceId) } })
         }
         scroll.addView(column)
         rootEdit.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -752,7 +774,7 @@ class AlarmListActivity : AppCompatActivity() {
             isSoundEffectsEnabled = false
             setOnLongClickListener {
                 deleteShiftDayIndex = index
-                renderEdit(FeatureType.SHIFT)
+                currentEditingInstanceId?.let { renderEdit(it) }
                 true
             }
             addView(LinearLayout(context).apply {
@@ -767,7 +789,7 @@ class AlarmListActivity : AppCompatActivity() {
                 }
                 setOnLongClickListener {
                     deleteShiftDayIndex = index
-                    renderEdit(FeatureType.SHIFT)
+                    currentEditingInstanceId?.let { renderEdit(it) }
                     true
                 }
                 addView(TextView(context).apply {
@@ -830,7 +852,7 @@ class AlarmListActivity : AppCompatActivity() {
                 shiftDaySummaries.add("休")
                 shiftCycleDays = shiftDaySummaries.size
                 saveUiState()
-                renderEdit(FeatureType.SHIFT)
+                currentEditingInstanceId?.let { renderEdit(it) }
             }
             addView(TextView(context).apply {
                 text = "+"
@@ -859,7 +881,7 @@ class AlarmListActivity : AppCompatActivity() {
         val dialog = BottomSheetDialog(this)
         val column = bottomSheetBase("第${index + 1}天", FeatureType.SHIFT.accent, onCancel = { dialog.dismiss() }) {
             dialog.dismiss()
-            renderEdit(FeatureType.SHIFT)
+            currentEditingInstanceId?.let { renderEdit(it) }
         }
         val enabledSwitch = MaterialSwitch(this).apply {
             text = "开启提醒"
@@ -877,7 +899,7 @@ class AlarmListActivity : AppCompatActivity() {
                     applyShiftDaySummaryChange(index, dayTimes.joinToString("、"))
                     saveUiState()
                     dialog.dismiss()
-                    renderEdit(FeatureType.SHIFT)
+                    currentEditingInstanceId?.let { renderEdit(it) }
                 }
             })
         }
@@ -894,7 +916,7 @@ class AlarmListActivity : AppCompatActivity() {
                     applyShiftDaySummaryChange(index, dayTimes.joinToString("、"))
                     saveUiState()
                     dialog.dismiss()
-                    renderEdit(FeatureType.SHIFT)
+                    currentEditingInstanceId?.let { renderEdit(it) }
                 }
             }
         })
@@ -915,7 +937,7 @@ class AlarmListActivity : AppCompatActivity() {
         shiftCycleDays = shiftDaySummaries.size
         deleteShiftDayIndex = null
         saveUiState()
-        renderEdit(FeatureType.SHIFT)
+        currentEditingInstanceId?.let { renderEdit(it) }
     }
 
     private fun applyShiftDaySummaryChange(index: Int, summary: String) {
@@ -948,7 +970,7 @@ class AlarmListActivity : AppCompatActivity() {
             syncShiftDaysToCycle()
             saveUiState()
             dialog.dismiss()
-            renderEdit(FeatureType.SHIFT)
+            currentEditingInstanceId?.let { renderEdit(it) }
         }
         val wheel = WheelView(this, 54, 5).apply {
             items = (1..31).map { it.toString() }
@@ -989,7 +1011,7 @@ class AlarmListActivity : AppCompatActivity() {
             specialRepeatUnit = pendingSpecialRepeatUnit
             saveUiState()
             dialog.dismiss()
-            renderEdit(FeatureType.SPECIAL)
+            currentEditingInstanceId?.let { renderEdit(it) }
         }
         fun rebuildContent(): LinearLayout {
             val column = bottomSheetBase("重复周期", FeatureType.SPECIAL.accent, onCancel = { dialog.dismiss() }) {
@@ -1241,7 +1263,9 @@ class AlarmListActivity : AppCompatActivity() {
             else -> ""
         }
 
-    private fun showRegularRepeatDialog(feature: FeatureType) {
+    private fun showRegularRepeatDialog(instanceId: String) {
+        val inst = alarmInstances.firstOrNull { it.id == instanceId } ?: return
+        val feature = inst.type
         val dialog = BottomSheetDialog(this)
         fun commitAndClose() {
             regularRepeatSummary = when {
@@ -1252,7 +1276,7 @@ class AlarmListActivity : AppCompatActivity() {
             }
             saveUiState()
             dialog.dismiss()
-            renderEdit(feature)
+            renderEdit(instanceId)
         }
         fun rebuildContent(): LinearLayout {
             val column = bottomSheetBase("重复", feature.accent, onCancel = { dialog.dismiss() }) {
@@ -1289,7 +1313,7 @@ class AlarmListActivity : AppCompatActivity() {
             lunarDateSummary = "${months[monthIndex]}${days[dayIndex]}"
             saveUiState()
             dialog.dismiss()
-            renderEdit(FeatureType.LUNAR)
+            currentEditingInstanceId?.let { renderEdit(it) }
         }
         val monthWheel = WheelView(this, 52, 5).apply {
             items = months
@@ -1312,17 +1336,19 @@ class AlarmListActivity : AppCompatActivity() {
         dialog.show()
     }
 
-    private fun showLunarRepeatDialog(feature: FeatureType) {
-        showOptionDialog("农历重复", listOf("每年", "只提醒一次"), lunarRepeatSummary, feature.accent) {
+    private fun showLunarRepeatDialog(instanceId: String) {
+        val inst = alarmInstances.firstOrNull { it.id == instanceId } ?: return
+        showOptionDialog("农历重复", listOf("每年", "只提醒一次"), lunarRepeatSummary, inst.type.accent) {
             lunarRepeatSummary = it
             saveUiState()
-            renderEdit(feature)
+            renderEdit(instanceId)
         }
     }
 
-    private fun showTitleDialog(feature: FeatureType) {
+    private fun showTitleDialog(instanceId: String) {
+        val inst = alarmInstances.firstOrNull { it.id == instanceId } ?: return
         val input = EditText(this).apply {
-            setText(alarmTitle(feature))
+            setText(inst.title)
             selectAll()
             inputType = InputType.TYPE_CLASS_TEXT
             setSingleLine(true)
@@ -1333,15 +1359,21 @@ class AlarmListActivity : AppCompatActivity() {
             .setNegativeButton("取消", null)
             .setPositiveButton("完成") { _, _ ->
                 val next = input.text?.toString()?.trim().orEmpty()
-                if (next.isNotEmpty()) alarmTitles[feature] = next
+                if (next.isNotEmpty()) {
+                    val idx = alarmInstances.indexOfFirst { it.id == instanceId }
+                    if (idx >= 0) alarmInstances[idx] = alarmInstances[idx].copy(title = next)
+                }
                 saveUiState()
-                renderEdit(feature)
+                renderEdit(instanceId)
             }
             .show()
     }
 
-    private fun showDateDialog(feature: FeatureType, title: String) {
-        val cal = (alarmDates[feature] ?: Calendar.getInstance()).clone() as Calendar
+    private fun showDateDialog(instanceId: String, title: String) {
+        val inst = alarmInstances.firstOrNull { it.id == instanceId } ?: return
+        val cal = Calendar.getInstance().apply {
+            if (inst.dateMs > 0L) timeInMillis = inst.dateMs
+        }
         val picker = DatePicker(this).apply {
             init(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH), cal.get(Calendar.DAY_OF_MONTH), null)
         }
@@ -1350,28 +1382,31 @@ class AlarmListActivity : AppCompatActivity() {
             .setView(picker)
             .setNegativeButton("取消", null)
             .setPositiveButton("完成") { _, _ ->
-                alarmDates[feature] = Calendar.getInstance().apply {
+                val newDateMs = Calendar.getInstance().apply {
                     set(Calendar.YEAR, picker.year)
                     set(Calendar.MONTH, picker.month)
                     set(Calendar.DAY_OF_MONTH, picker.dayOfMonth)
-                }
+                }.timeInMillis
+                val idx = alarmInstances.indexOfFirst { it.id == instanceId }
+                if (idx >= 0) alarmInstances[idx] = alarmInstances[idx].copy(dateMs = newDateMs)
                 saveUiState()
-                renderEdit(feature)
+                renderEdit(instanceId)
             }
             .show()
     }
 
-    private fun showRingtoneDialog(feature: FeatureType) {
-        currentEditingFeature = feature
+    private fun showRingtoneDialog(instanceId: String) {
+        currentEditingInstanceId = instanceId
+        val inst = alarmInstances.firstOrNull { it.id == instanceId } ?: return
         val dialog = BottomSheetDialog(this)
         fun rebuildContent(): LinearLayout {
-            val column = bottomSheetBase("铃声", feature.accent, onCancel = {
+            val column = bottomSheetBase("铃声", inst.type.accent, onCancel = {
                 stopRingtonePreview()
                 dialog.dismiss()
             }) {
                 stopRingtonePreview()
                 dialog.dismiss()
-                renderEdit(feature)
+                renderEdit(instanceId)
             }
             column.addView(settingsRow("当前铃声", ringtoneSummary, false))
             column.addView(settingsRow("选择系统铃声", "", true) {
@@ -1605,7 +1640,7 @@ class AlarmListActivity : AppCompatActivity() {
         val column = baseScroll("", rightText = "今天") {}
         column.removeAllViews()
         val now = selectedCalendarDay.clone() as Calendar
-        val shiftStartMs = (alarmDates[FeatureType.SHIFT] ?: Calendar.getInstance()).timeInMillis
+        val shiftStartMs = alarmInstances.firstOrNull { it.type == FeatureType.SHIFT }?.dateMs ?: System.currentTimeMillis()
         column.addView(LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, 0, 0, dp(10))
@@ -1864,7 +1899,7 @@ class AlarmListActivity : AppCompatActivity() {
         }
     }
 
-    private fun vibrationButtonRow(feature: FeatureType): View {
+    private fun vibrationButtonRow(instanceId: String): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1882,7 +1917,7 @@ class AlarmListActivity : AppCompatActivity() {
                 setOnCheckedChangeListener { _, checked ->
                     vibrationEnabled = checked
                     saveUiState()
-                    renderEdit(feature)
+                    renderEdit(instanceId)
                 }
             })
             setOnClickListener {
@@ -1925,7 +1960,7 @@ class AlarmListActivity : AppCompatActivity() {
         }
     }
 
-    private fun ringtoneSettingsRow(feature: FeatureType): View {
+    private fun ringtoneSettingsRow(instanceId: String): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1959,7 +1994,7 @@ class AlarmListActivity : AppCompatActivity() {
                 isSoundEffectsEnabled = false
                 setOnClickListener {
                     toggleRingtonePreview()
-                    renderEdit(feature)
+                    renderEdit(instanceId)
                 }
             }, LinearLayout.LayoutParams(dp(30), dp(36)))
             addView(TextView(context).apply {
@@ -1986,14 +2021,16 @@ class AlarmListActivity : AppCompatActivity() {
             FeatureType.LUNAR -> "农历生日提醒"
         }
 
-    private fun alarmTitle(feature: FeatureType): String = alarmTitles[feature] ?: defaultAlarmName(feature)
+    // alarmTitle removed — use instance.title directly
 
-    private fun medicineNameText(feature: FeatureType): String =
-        medNames[feature]?.ifEmpty { "未设置" } ?: "未设置"
+    private fun medicineNameText(instanceId: String): String =
+        alarmInstances.firstOrNull { it.id == instanceId }?.config?.get("medicineName")?.ifEmpty { "未设置" } ?: "未设置"
 
-    private fun showMedicineNameDialog(feature: FeatureType) {
+    private fun showMedicineNameDialog(instanceId: String) {
+        val inst = alarmInstances.firstOrNull { it.id == instanceId } ?: return
+        val currentMed = inst.config["medicineName"] ?: ""
         val input = EditText(this).apply {
-            setText(medNames[feature] ?: "")
+            setText(currentMed)
             hint = "如：阿莫西林、降压药"
             inputType = InputType.TYPE_CLASS_TEXT
             setSingleLine(true)
@@ -2004,42 +2041,20 @@ class AlarmListActivity : AppCompatActivity() {
             .setNegativeButton("取消", null)
             .setPositiveButton("确定") { _, _ ->
                 val next = input.text.toString().trim()
-                medNames[feature] = next
+                val idx = alarmInstances.indexOfFirst { it.id == instanceId }
+                if (idx >= 0) {
+                    val updatedConfig = alarmInstances[idx].config.toMutableMap().apply { put("medicineName", next) }
+                    alarmInstances[idx] = alarmInstances[idx].copy(config = updatedConfig)
+                }
                 saveUiState()
-                renderEdit(feature)
+                renderEdit(instanceId)
             }
             .show()
     }
 
     private fun timeText(): String = String.format("%02d:%02d", editHour, editMinute)
 
-    private fun featureTime(feature: FeatureType): Pair<Int, Int> {
-        return featureEditTimes[feature] ?: when (feature) {
-            FeatureType.REGULAR -> 8 to 0
-            FeatureType.SPECIAL -> 8 to 0
-            FeatureType.SHIFT -> 8 to 0
-            FeatureType.LUNAR -> 8 to 0
-        }
-    }
-
-    private fun featureTimeText(feature: FeatureType): String {
-        val (hour, minute) = featureTime(feature)
-        return String.format("%02d:%02d", hour, minute)
-    }
-
     private fun shiftPreviewTimeText(): String = UiAlarmSchedulePlanner.shiftPreviewTimeText(shiftDaySummaries)
-
-    private fun setFeatureTime(feature: FeatureType, hour: Int, minute: Int) {
-        if (feature == FeatureType.SHIFT) return
-        featureEditTimes[feature] = hour to minute
-        editHour = hour
-        editMinute = minute
-    }
-
-    private fun dateText(feature: FeatureType): String {
-        val cal = alarmDates[feature] ?: Calendar.getInstance()
-        return SimpleDateFormat("yyyy-M-d E", Locale.CHINA).format(cal.time)
-    }
 
     private fun specialRepeatText(): String {
         if (specialRepeatUnit == "时分") {
@@ -2062,9 +2077,9 @@ class AlarmListActivity : AppCompatActivity() {
         while (shiftDaySummaries.size > shiftCycleDays) shiftDaySummaries.removeAt(shiftDaySummaries.lastIndex)
     }
 
-    private fun replaceScheduledAlarmsForFeature(feature: FeatureType): Int {
-        cancelScheduledAlarmsForFeature(feature)
-        val plans = schedulePlansForFeature(feature)
+    private fun replaceScheduledAlarmsForInstance(instance: AlarmInstance): Int {
+        cancelScheduledAlarmsForInstance(instance.id)
+        val plans = schedulePlansForInstance(instance)
         plans.forEach { plan ->
             AlarmScheduler.schedule(
                 this,
@@ -2088,56 +2103,58 @@ class AlarmListActivity : AppCompatActivity() {
         return plans.size
     }
 
-    private fun cancelScheduledAlarmsForFeature(feature: FeatureType) {
-        val prefix = "alarm_ui_${feature.name.lowercase(Locale.US)}_"
+    private fun cancelScheduledAlarmsForInstance(instanceId: String) {
+        val prefix = "alarm_ui_${instanceId}_"
         AlarmScheduler.getAllAlarms(this)
             .filter { it.id.startsWith(prefix) }
             .forEach { AlarmScheduler.deleteAlarm(this, it.id) }
     }
 
-    private fun schedulePlansForFeature(feature: FeatureType): List<UiAlarmSchedulePlanner.SchedulePlan> {
-        val enabled = alarmActive[feature] == true
-        val label = alarmTitle(feature)
-        val medName = medNames[feature] ?: ""
-        val dateMs = (alarmDates[feature] ?: Calendar.getInstance()).timeInMillis
-        val (hour, minute) = featureTime(feature)
-        return when (feature) {
-            FeatureType.REGULAR -> UiAlarmSchedulePlanner.planRegular(
-                enabled = enabled,
-                hour = hour,
-                minute = minute,
-                label = label,
-                ringtoneUri = selectedRingtoneUri,
-                vibrate = vibrationEnabled,
-                selectedRules = regularRepeatSelections,
-                selectedDateMs = dateMs
-            )
-            FeatureType.SPECIAL -> UiAlarmSchedulePlanner.planSpecial(
-                enabled = enabled,
-                hour = hour,
-                minute = minute,
-                label = label,
-                ringtoneUri = selectedRingtoneUri,
-                vibrate = vibrationEnabled,
-                unit = specialRepeatUnit,
-                value = specialRepeatValue,
-                hours = specialRepeatHours,
-                minutes = specialRepeatMinutes,
-                selectedWeekdays = specialWeekdaySelections,
-                startDateMs = dateMs,
-                medicineName = medName
-            )
-            FeatureType.SHIFT -> UiAlarmSchedulePlanner.planShift(
-                enabled = enabled,
-                cycleDays = shiftCycleDays,
-                startDateMs = dateMs,
-                daySummaries = shiftDaySummaries,
-                label = label,
-                ringtoneUri = selectedRingtoneUri,
-                vibrate = vibrationEnabled,
-                medicineName = medName
-            )
+    private fun schedulePlansForInstance(instance: AlarmInstance): List<UiAlarmSchedulePlanner.SchedulePlan> {
+        if (!instance.active) return emptyList()
+        val label = instance.title
+        val dateMs = instance.dateMs
+        val (hour, minute) = instance.hour to instance.minute
+        val medName = instance.config["medicineName"] ?: ""
+        val rawPlans = when (instance.type) {
+            FeatureType.REGULAR -> {
+                val selections = (instance.config["repeatSelections"] ?: regularRepeatSelections.joinToString("|"))
+                    .split("|").filter { it.isNotBlank() }.toSet()
+                UiAlarmSchedulePlanner.planRegular(
+                    enabled = true, hour = hour, minute = minute, label = label,
+                    ringtoneUri = selectedRingtoneUri, vibrate = vibrationEnabled,
+                    selectedRules = selections, selectedDateMs = dateMs
+                )
+            }
+            FeatureType.SPECIAL -> {
+                val unit = instance.config["repeatUnit"] ?: specialRepeatUnit
+                val value = (instance.config["repeatValue"] ?: specialRepeatValue.toString()).toIntOrNull() ?: specialRepeatValue
+                val sHours = (instance.config["repeatHours"] ?: specialRepeatHours.toString()).toIntOrNull() ?: specialRepeatHours
+                val sMinutes = (instance.config["repeatMinutes"] ?: specialRepeatMinutes.toString()).toIntOrNull() ?: specialRepeatMinutes
+                val weekdays = (instance.config["weekdaySelections"] ?: specialWeekdaySelections.joinToString("|"))
+                    .split("|").filter { it.isNotBlank() }.toSet()
+                UiAlarmSchedulePlanner.planSpecial(
+                    enabled = true, hour = hour, minute = minute, label = label,
+                    ringtoneUri = selectedRingtoneUri, vibrate = vibrationEnabled,
+                    unit = unit, value = value, hours = sHours, minutes = sMinutes,
+                    selectedWeekdays = weekdays, startDateMs = dateMs, medicineName = medName
+                )
+            }
+            FeatureType.SHIFT -> {
+                val cycleDays = (instance.config["cycleDays"] ?: shiftCycleDays.toString()).toIntOrNull() ?: shiftCycleDays
+                val summaries = (instance.config["daySummaries"] ?: shiftDaySummaries.joinToString("|"))
+                    .split("|").filter { it.isNotBlank() }.toMutableList()
+                UiAlarmSchedulePlanner.planShift(
+                    enabled = true, cycleDays = cycleDays, startDateMs = dateMs,
+                    daySummaries = summaries, label = label,
+                    ringtoneUri = selectedRingtoneUri, vibrate = vibrationEnabled, medicineName = medName
+                )
+            }
             FeatureType.LUNAR -> emptyList()
+        }
+        // Make planner IDs instance-unique
+        return rawPlans.map { plan ->
+            plan.copy(id = "alarm_ui_${instance.id}_${plan.id.removePrefix("alarm_ui_")}")
         }
     }
 
@@ -2161,7 +2178,7 @@ class AlarmListActivity : AppCompatActivity() {
                 setPadding(dp(8), dp(8), dp(16), dp(8))
                 setOnClickListener {
                     isAlarmDeleteMode = false
-                    checkedAlarmTypes.clear()
+                    checkedInstanceIds.clear()
                     renderAlarmList()
                 }
             })
@@ -2174,7 +2191,7 @@ class AlarmListActivity : AppCompatActivity() {
                 isFocusable = true
                 isHapticFeedbackEnabled = false
                 isSoundEffectsEnabled = false
-                val accentColor = if (checkedAlarmTypes.isEmpty()) 0xFFCBD5E1.toInt() else 0xFF4A6CF7.toInt()
+                val accentColor = if (checkedInstanceIds.isEmpty()) 0xFFCBD5E1.toInt() else 0xFF4A6CF7.toInt()
                 addView(TextView(context).apply {
                     text = "🗑"
                     textSize = 22f
@@ -2187,83 +2204,270 @@ class AlarmListActivity : AppCompatActivity() {
                     setTextColor(accentColor)
                 })
                 setOnClickListener {
-                    if (checkedAlarmTypes.isNotEmpty()) deleteCheckedAlarms()
+                    if (checkedInstanceIds.isNotEmpty()) deleteCheckedAlarms()
                 }
             })
         }
     }
 
     private fun deleteCheckedAlarms() {
-        val toDelete = checkedAlarmTypes.toList()
-        for (feature in toDelete) {
-            hiddenFeatureTypes.add(feature)
-            alarmActive[feature] = false
-            cancelScheduledAlarmsForFeature(feature)
+        val toDelete = checkedInstanceIds.toList()
+        for (instanceId in toDelete) {
+            cancelScheduledAlarmsForInstance(instanceId)
+            alarmInstances.removeAll { it.id == instanceId }
         }
-        checkedAlarmTypes.clear()
+        checkedInstanceIds.clear()
         isAlarmDeleteMode = false
         saveUiState()
         renderAlarmList()
         Toast.makeText(this, "已删除 ${toDelete.size} 个闹钟", Toast.LENGTH_SHORT).show()
     }
 
-    private fun deleteFeatureWithUndo(feature: FeatureType) {
-        val hadActive = alarmActive[feature] == true
-        hiddenFeatureTypes.add(feature)
-        alarmActive[feature] = false
+    private fun deleteInstanceWithUndo(instanceId: String) {
+        val instance = alarmInstances.firstOrNull { it.id == instanceId } ?: return
+        val hadActive = instance.active
+        alarmInstances.removeAll { it.id == instanceId }
         isAlarmDeleteMode = false
-        cancelScheduledAlarmsForFeature(feature)
+        cancelScheduledAlarmsForInstance(instanceId)
         saveUiState()
         renderAlarmList()
         Snackbar.make(content, "已删除闹钟", Snackbar.LENGTH_LONG)
             .setAction("撤销") {
-                hiddenFeatureTypes.remove(feature)
-                alarmActive[feature] = hadActive
+                alarmInstances.add(instance.copy(active = hadActive))
                 saveUiState()
-                if (hadActive) replaceScheduledAlarmsForFeature(feature)
+                if (hadActive) replaceScheduledAlarmsForInstance(instance)
                 renderAlarmList()
             }
             .show()
     }
 
+    // ════════════════════════════════════════
+    //  SERIALIZATION HELPERS
+    // ════════════════════════════════════════
+
+    private fun serializeInstancesToJson(instances: List<AlarmInstance>): String {
+        val arr = org.json.JSONArray()
+        for (inst in instances) {
+            val obj = org.json.JSONObject().apply {
+                put("id", inst.id)
+                put("type", inst.type.name)
+                put("title", inst.title)
+                put("hour", inst.hour)
+                put("minute", inst.minute)
+                put("dateMs", inst.dateMs)
+                put("active", inst.active)
+                put("config", org.json.JSONObject(inst.config))
+            }
+            arr.put(obj)
+        }
+        return arr.toString()
+    }
+
+    private fun parseInstancesFromJson(json: String): List<AlarmInstance> {
+        val arr = org.json.JSONArray(json)
+        val result = mutableListOf<AlarmInstance>()
+        for (i in 0 until arr.length()) {
+            val obj = arr.getJSONObject(i)
+            val configObj = obj.optJSONObject("config") ?: org.json.JSONObject()
+            val config = mutableMapOf<String, String>()
+            configObj.keys().forEach { key -> config[key] = configObj.getString(key) }
+            result.add(AlarmInstance(
+                id = obj.getString("id"),
+                type = FeatureType.valueOf(obj.getString("type")),
+                title = obj.getString("title"),
+                hour = obj.optInt("hour", 8),
+                minute = obj.optInt("minute", 0),
+                dateMs = obj.optLong("dateMs", 0L),
+                active = obj.optBoolean("active", true),
+                config = config
+            ))
+        }
+        return result
+    }
+
+    private fun migrateFromOldFormat() {
+        // Build one instance per FeatureType from old SharedPreferences keys
+        for (feature in FeatureType.values()) {
+            val oldTitle = statePrefs.getString("title_${feature.name}", null) ?: continue
+            val hour = statePrefs.getInt("timeHour_${feature.name}", editHour)
+            val minute = statePrefs.getInt("timeMinute_${feature.name}", editMinute)
+            val dateMs = statePrefs.getLong("date_${feature.name}", 0L)
+            val wasActive = statePrefs.getBoolean("active_${feature.name}", true)
+            // If the feature was hidden (soft-deleted), mark inactive
+            val hiddenStr = statePrefs.getString("hiddenFeatureTypes", "") ?: ""
+            val wasHidden = hiddenStr.split("|").any { it == feature.name }
+            val medName = statePrefs.getString("med_${feature.name}", "") ?: ""
+
+            val config = mutableMapOf<String, String>()
+            when (feature) {
+                FeatureType.REGULAR -> {
+                    config["repeatSummary"] = statePrefs.getString("regularRepeatSummary", "每周一、三、五") ?: "每周一、三、五"
+                    config["repeatSelections"] = statePrefs.getString("regularRepeatSelections", "每周一|每周三|每周五") ?: "每周一|每周三|每周五"
+                }
+                FeatureType.SPECIAL -> {
+                    config["repeatValue"] = (statePrefs.getInt("specialRepeatValue", 40)).toString()
+                    config["repeatUnit"] = statePrefs.getString("specialRepeatUnit", "天") ?: "天"
+                    config["repeatHours"] = (statePrefs.getInt("specialRepeatHours", 2)).toString()
+                    config["repeatMinutes"] = (statePrefs.getInt("specialRepeatMinutes", 30)).toString()
+                    config["weekdaySelections"] = statePrefs.getString("specialWeekdaySelections", "一|三|五") ?: "一|三|五"
+                    if (medName.isNotEmpty()) config["medicineName"] = medName
+                }
+                FeatureType.SHIFT -> {
+                    config["cycleDays"] = (statePrefs.getInt("shiftCycleDays", 4)).toString()
+                    config["daySummaries"] = statePrefs.getString("shiftDaySummaries", "07:30|07:30 +1|19:30|休") ?: "07:30|07:30 +1|19:30|休"
+                    if (medName.isNotEmpty()) config["medicineName"] = medName
+                }
+                FeatureType.LUNAR -> {
+                    config["lunarDate"] = statePrefs.getString("lunarDateSummary", "五月十八") ?: "五月十八"
+                    config["lunarRepeat"] = statePrefs.getString("lunarRepeatSummary", "每年") ?: "每年"
+                }
+            }
+
+            alarmInstances.add(AlarmInstance(
+                id = java.util.UUID.randomUUID().toString(),
+                type = feature,
+                title = oldTitle,
+                hour = hour,
+                minute = minute,
+                dateMs = dateMs,
+                active = !wasHidden,
+                config = config
+            ))
+        }
+        // Persist migrated instances immediately
+        statePrefs.edit()
+            .putString("alarm_instances_json", serializeInstancesToJson(alarmInstances))
+            .apply()
+    }
+
+    private fun buildConfigForType(type: FeatureType): Map<String, String> = when (type) {
+        FeatureType.REGULAR -> mapOf(
+            "repeatSummary" to regularRepeatSummary,
+            "repeatSelections" to regularRepeatSelections.joinToString("|")
+        )
+        FeatureType.SPECIAL -> mapOf(
+            "repeatValue" to specialRepeatValue.toString(),
+            "repeatUnit" to specialRepeatUnit,
+            "repeatHours" to specialRepeatHours.toString(),
+            "repeatMinutes" to specialRepeatMinutes.toString(),
+            "weekdaySelections" to specialWeekdaySelections.joinToString("|"),
+            "medicineName" to (medNameForType(FeatureType.SPECIAL))
+        )
+        FeatureType.SHIFT -> mapOf(
+            "cycleDays" to shiftCycleDays.toString(),
+            "daySummaries" to shiftDaySummaries.joinToString("|"),
+            "medicineName" to (medNameForType(FeatureType.SHIFT))
+        )
+        FeatureType.LUNAR -> mapOf(
+            "lunarDate" to lunarDateSummary,
+            "lunarRepeat" to lunarRepeatSummary
+        )
+    }
+
+    private fun medNameForType(type: FeatureType): String {
+        return alarmInstances.find { it.type == type && it.config.containsKey("medicineName") }
+            ?.config?.get("medicineName") ?: ""
+    }
+
+    private fun loadConfigFromInstance(instance: AlarmInstance) {
+        val c = instance.config
+        when (instance.type) {
+            FeatureType.REGULAR -> {
+                regularRepeatSummary = c["repeatSummary"] ?: regularRepeatSummary
+                c["repeatSelections"]?.let {
+                    regularRepeatSelections.clear()
+                    regularRepeatSelections.addAll(it.split("|").filter { s -> s.isNotBlank() })
+                }
+            }
+            FeatureType.SPECIAL -> {
+                specialRepeatValue = c["repeatValue"]?.toIntOrNull() ?: specialRepeatValue
+                specialRepeatUnit = c["repeatUnit"] ?: specialRepeatUnit
+                specialRepeatHours = c["repeatHours"]?.toIntOrNull() ?: specialRepeatHours
+                specialRepeatMinutes = c["repeatMinutes"]?.toIntOrNull() ?: specialRepeatMinutes
+                c["weekdaySelections"]?.let {
+                    specialWeekdaySelections.clear()
+                    specialWeekdaySelections.addAll(it.split("|").filter { s -> s.isNotBlank() })
+                }
+            }
+            FeatureType.SHIFT -> {
+                shiftCycleDays = c["cycleDays"]?.toIntOrNull() ?: shiftCycleDays
+                c["daySummaries"]?.let {
+                    shiftDaySummaries.clear()
+                    shiftDaySummaries.addAll(it.split("|").filter { s -> s.isNotBlank() })
+                }
+            }
+            FeatureType.LUNAR -> {
+                lunarDateSummary = c["lunarDate"] ?: lunarDateSummary
+                lunarRepeatSummary = c["lunarRepeat"] ?: lunarRepeatSummary
+            }
+        }
+    }
+
+    private fun alarmInstanceDateText(instance: AlarmInstance): String {
+        if (instance.dateMs <= 0L) return "未设置"
+        val cal = Calendar.getInstance().apply { timeInMillis = instance.dateMs }
+        val sdf = SimpleDateFormat("yyyy/M/d", Locale.CHINA)
+        val weekDay = listOf("日", "一", "二", "三", "四", "五", "六")[cal.get(Calendar.DAY_OF_WEEK) - 1]
+        return "${sdf.format(cal.time)} 周$weekDay"
+    }
+
+    private fun alarmInstanceRuleText(instance: AlarmInstance): String {
+        return when (instance.type) {
+            FeatureType.REGULAR -> instance.config["repeatSummary"] ?: regularRepeatSummary
+            FeatureType.SPECIAL -> {
+                val unit = instance.config["repeatUnit"] ?: specialRepeatUnit
+                val value = instance.config["repeatValue"] ?: specialRepeatValue.toString()
+                if (unit == "时分") {
+                    val h = instance.config["repeatHours"]?.toIntOrNull() ?: specialRepeatHours
+                    val m = instance.config["repeatMinutes"]?.toIntOrNull() ?: specialRepeatMinutes
+                    "每${h}小时${m}分钟"
+                } else if (unit == "周") {
+                    val weekdays = instance.config["weekdaySelections"]?.split("|")?.joinToString("、") ?: ""
+                    "每${value}周（周$weekdays）"
+                } else {
+                    "每${value}$unit"
+                }
+            }
+            FeatureType.SHIFT -> "每轮 ${instance.config["cycleDays"]?.toIntOrNull() ?: shiftCycleDays} 天"
+            FeatureType.LUNAR -> instance.config["lunarRepeat"] ?: lunarRepeatSummary
+        }
+    }
+
+    private fun instanceTitle(instanceId: String): String? {
+        return alarmInstances.firstOrNull { it.id == instanceId }?.title
+    }
+
+    private fun instanceDateMs(instanceId: String): Long {
+        return alarmInstances.firstOrNull { it.id == instanceId }?.dateMs ?: 0L
+    }
+
+    private fun alarmInstanceNextText(instance: AlarmInstance): String {
+        // A simple next-ring text based on the first scheduled alarm for this instance
+        val scheduled = AlarmScheduler.getAllAlarms(this)
+            .filter { it.id.startsWith("alarm_ui_${instance.id}_") }
+            .minByOrNull { it.nextTimeMs }
+        return if (scheduled != null && scheduled.nextTimeMs > 0L) {
+            val sdf = SimpleDateFormat("MM/dd HH:mm", Locale.CHINA)
+            "下次响铃：${sdf.format(java.util.Date(scheduled.nextTimeMs))}"
+        } else {
+            "下次响铃：待计算"
+        }
+    }
+
     private fun loadUiState() {
         editHour = statePrefs.getInt("editHour", editHour)
         editMinute = statePrefs.getInt("editMinute", editMinute)
-        FeatureType.values().forEach { feature ->
-            if (feature == FeatureType.SHIFT) return@forEach
-            val hourKey = "timeHour_${feature.name}"
-            val minuteKey = "timeMinute_${feature.name}"
-            val savedHour = statePrefs.getInt(hourKey, editHour)
-            val savedMinute = statePrefs.getInt(minuteKey, editMinute)
-            featureEditTimes[feature] = savedHour to savedMinute
-        }
         shiftCycleDays = statePrefs.getInt("shiftCycleDays", shiftCycleDays)
         statePrefs.getString("shiftDaySummaries", null)?.let {
             shiftDaySummaries.clear()
             shiftDaySummaries.addAll(it.split("|").filter { item -> item.isNotBlank() })
-        }
-        FeatureType.values().forEach { feature ->
-            statePrefs.getString("title_${feature.name}", null)?.let { alarmTitles[feature] = it }
-            statePrefs.getString("med_${feature.name}", null)?.let { medNames[feature] = it }
-            alarmActive[feature] = statePrefs.getBoolean("active_${feature.name}", alarmActive[feature] == true)
-            val millis = statePrefs.getLong("date_${feature.name}", -1L)
-            if (millis > 0L) alarmDates[feature] = Calendar.getInstance().apply { timeInMillis = millis }
-        }
-        statePrefs.getString("hiddenFeatureTypes", null)?.let {
-            hiddenFeatureTypes.clear()
-            hiddenFeatureTypes.addAll(
-                it.split("|")
-                    .mapNotNull { name -> runCatching { FeatureType.valueOf(name) }.getOrNull() }
-            )
-        }
-        if (alarmTitles[FeatureType.SPECIAL] == "复诊提醒") {
-            alarmTitles[FeatureType.SPECIAL] = "特殊周期提醒"
         }
         ringtoneSummary = statePrefs.getString("ringtoneSummary", ringtoneSummary) ?: ringtoneSummary
         selectedRingtoneUri = statePrefs.getString("selectedRingtoneUri", selectedRingtoneUri)
         vibrationEnabled = statePrefs.getBoolean("vibrationEnabled", vibrationEnabled)
         ringDurationMinutes = statePrefs.getInt("ringDurationMinutes", ringDurationMinutes)
         snoozeMinutes = statePrefs.getInt("snoozeMinutes", snoozeMinutes)
+        // Load edit-buffer singletons (pre-fill for new alarm creation)
         regularRepeatSummary = statePrefs.getString("regularRepeatSummary", regularRepeatSummary) ?: regularRepeatSummary
         statePrefs.getString("regularRepeatSelections", null)?.let {
             regularRepeatSelections.clear()
@@ -2281,20 +2485,20 @@ class AlarmListActivity : AppCompatActivity() {
         }
         lunarDateSummary = statePrefs.getString("lunarDateSummary", lunarDateSummary) ?: lunarDateSummary
         lunarRepeatSummary = statePrefs.getString("lunarRepeatSummary", lunarRepeatSummary) ?: lunarRepeatSummary
+        // Load alarm instances
+        val json = statePrefs.getString("alarm_instances_json", null)
+        if (json != null) {
+            alarmInstances.clear()
+            alarmInstances.addAll(parseInstancesFromJson(json))
+        } else {
+            migrateFromOldFormat()
+        }
     }
 
     private fun saveUiState() {
         statePrefs.edit()
             .putInt("editHour", editHour)
             .putInt("editMinute", editMinute)
-            .apply {
-                FeatureType.values().forEach { feature ->
-                    if (feature == FeatureType.SHIFT) return@forEach
-                    val (hour, minute) = featureTime(feature)
-                    putInt("timeHour_${feature.name}", hour)
-                    putInt("timeMinute_${feature.name}", minute)
-                }
-            }
             .putInt("shiftCycleDays", shiftCycleDays)
             .putString("shiftDaySummaries", shiftDaySummaries.joinToString("|"))
             .putString("ringtoneSummary", ringtoneSummary)
@@ -2311,15 +2515,7 @@ class AlarmListActivity : AppCompatActivity() {
             .putString("specialWeekdaySelections", specialWeekdaySelections.joinToString("|"))
             .putString("lunarDateSummary", lunarDateSummary)
             .putString("lunarRepeatSummary", lunarRepeatSummary)
-            .putString("hiddenFeatureTypes", hiddenFeatureTypes.joinToString("|") { it.name })
-            .apply {
-                FeatureType.values().forEach { feature ->
-                    putString("title_${feature.name}", alarmTitle(feature))
-                    medNames[feature]?.takeIf { it.isNotEmpty() }?.let { putString("med_${feature.name}", it) }
-                    putBoolean("active_${feature.name}", alarmActive[feature] == true)
-                    alarmDates[feature]?.let { putLong("date_${feature.name}", it.timeInMillis) }
-                }
-            }
+            .putString("alarm_instances_json", serializeInstancesToJson(alarmInstances))
             .apply()
     }
 
