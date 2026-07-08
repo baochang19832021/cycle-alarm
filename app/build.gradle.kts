@@ -66,5 +66,6 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
     implementation("androidx.preference:preference-ktx:1.2.1")
+    implementation("cn.6tail:lunar:1.7.7")
     testImplementation("junit:junit:4.13.2")
 }

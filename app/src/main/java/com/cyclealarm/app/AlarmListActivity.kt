@@ -36,6 +36,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.snackbar.Snackbar
 import com.cyclealarm.domain.UiAlarmSchedulePlanner
+import com.cyclealarm.domain.AlarmTimeCalculator
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.materialswitch.MaterialSwitch
 import java.text.SimpleDateFormat
@@ -143,6 +144,12 @@ class AlarmListActivity : AppCompatActivity() {
     private var vibrationEnabled = true
     private var ringDurationMinutes = 1
     private var snoozeMinutes = 5
+    private var snoozeEnabled = true
+    // Countdown refresh
+    private val countdownViews = mutableMapOf<String, TextView>()
+    private val nextRingMsCache = mutableMapOf<String, Long>()
+    private val countdownHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var countdownRunning = false
     private var regularRepeatSummary = "每周一、三、五"
     private val regularRepeatSelections = mutableSetOf("每周一", "每周三", "每周五")
     private var specialRepeatValue = 40
@@ -152,6 +159,8 @@ class AlarmListActivity : AppCompatActivity() {
     private val specialWeekdaySelections = mutableSetOf("一", "三", "五")
     private var lunarDateSummary = "五月十八"
     private var lunarRepeatSummary = "每年"
+    private var lunarAdvanceDays = 3
+    private var lunarAdvanceEnabled = false
 
     private val ringtonePickerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -205,6 +214,7 @@ class AlarmListActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        startCountdownRefresh()
         if (currentTab == Tab.MINE) renderMine()
 
         // Post-fire verification: alert user if any alarm was missed
@@ -224,6 +234,7 @@ class AlarmListActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         stopRingtonePreview()
+        stopCountdownRefresh()
     }
 
     private fun buildShell() {
@@ -280,7 +291,8 @@ class AlarmListActivity : AppCompatActivity() {
             }, LinearLayout.LayoutParams(dp(22), dp(22)))
             item.addView(TextView(this).apply {
                 text = pair.second
-                textSize = 11f
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
                 includeFontPadding = false
                 setPadding(0, dp(3), 0, 0)
@@ -315,7 +327,7 @@ class AlarmListActivity : AppCompatActivity() {
         content.addView(view)
     }
 
-    private fun baseScroll(title: String, subtitle: String? = null, rightText: String? = null, onRight: (() -> Unit)? = null): LinearLayout {
+    private fun baseScroll(title: String, subtitle: String? = null, rightText: String? = null, topPadding: Int = 0, onRight: (() -> Unit)? = null): LinearLayout {
         val scroll = ScrollView(this).apply {
             isFillViewport = true
             isVerticalScrollBarEnabled = false
@@ -323,7 +335,7 @@ class AlarmListActivity : AppCompatActivity() {
         }
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(22), dp(16), dp(18))
+            setPadding(dp(16), dp(22) + topPadding, dp(16), dp(18))
         }
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -364,9 +376,15 @@ class AlarmListActivity : AppCompatActivity() {
     }
 
     private fun renderAlarmList() {
-        val column = baseScroll("闹钟")
+        countdownViews.clear()
+        nextRingMsCache.clear()
+        val topPadding = if (isAlarmDeleteMode) dp(52) else 0
+        val column = baseScroll("闹钟", topPadding = topPadding)
+        // Fixed delete toolbar outside ScrollView — always visible at top
         if (isAlarmDeleteMode) {
-            column.addView(deleteToolbar(), 1)
+            content.addView(deleteToolbar(), FrameLayout.LayoutParams(-1, -2).apply {
+                gravity = Gravity.TOP
+            })
         }
         val demos = alarmInstances.map { inst ->
             DemoAlarm(
@@ -377,6 +395,43 @@ class AlarmListActivity : AppCompatActivity() {
                 rule = alarmInstanceRuleText(inst),
                 active = inst.active
             )
+        }
+        // Center-bottom add button with custom-drawn "+" for pixel-perfect centering
+        if (!isAlarmDeleteMode) {
+            val btnSize = dp(52)
+            val plusPaint = android.graphics.Paint().apply {
+                color = 0xFFFFFFFF.toInt()
+                style = android.graphics.Paint.Style.FILL
+                isAntiAlias = true
+            }
+            val armW = dp(3).toFloat()
+            val armLen = dp(22).toFloat()
+            val cx = btnSize / 2f
+            val cy = btnSize / 2f
+            // Horizontal bar
+            val hRect = android.graphics.RectF(cx - armLen / 2f, cy - armW / 2f, cx + armLen / 2f, cy + armW / 2f)
+            // Vertical bar
+            val vRect = android.graphics.RectF(cx - armW / 2f, cy - armLen / 2f, cx + armW / 2f, cy + armLen / 2f)
+            content.addView(object : View(this) {
+                override fun onDraw(canvas: android.graphics.Canvas) {
+                    canvas.drawRoundRect(hRect, armW / 2f, armW / 2f, plusPaint)
+                    canvas.drawRoundRect(vRect, armW / 2f, armW / 2f, plusPaint)
+                }
+            }.apply {
+                background = rounded(0xFF4A6CF7.toInt(), dp(26))
+                isClickable = true
+                isFocusable = true
+                isHapticFeedbackEnabled = false
+                isSoundEffectsEnabled = false
+                setOnClickListener {
+                    isAlarmDeleteMode = false
+                    checkedInstanceIds.clear()
+                    renderFunctions()
+                }
+            }, FrameLayout.LayoutParams(btnSize, btnSize).apply {
+                gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                bottomMargin = dp(24)
+            })
         }
         if (demos.isEmpty()) {
             column.addView(TextView(this).apply {
@@ -390,30 +445,6 @@ class AlarmListActivity : AppCompatActivity() {
             demos.forEachIndexed { idx, item ->
                 column.addView(alarmCard(alarmInstances[idx].id, item))
             }
-        }
-        // Floating add button (blue circle, white "+")
-        if (!isAlarmDeleteMode) {
-            content.addView(TextView(this).apply {
-                text = "+"
-                textSize = 26f
-                typeface = Typeface.DEFAULT_BOLD
-                gravity = Gravity.CENTER
-                setTextColor(0xFFFFFFFF.toInt())
-                background = rounded(0xFF4A6CF7.toInt(), dp(28))
-                isClickable = true
-                isFocusable = true
-                isHapticFeedbackEnabled = false
-                isSoundEffectsEnabled = false
-                setOnClickListener {
-                    isAlarmDeleteMode = false
-                    checkedInstanceIds.clear()
-                    renderFunctions()
-                }
-            }, FrameLayout.LayoutParams(dp(56), dp(56)).apply {
-                gravity = Gravity.BOTTOM or Gravity.END
-                bottomMargin = dp(24)
-                rightMargin = dp(20)
-            })
         }
     }
 
@@ -506,11 +537,13 @@ class AlarmListActivity : AppCompatActivity() {
                 includeFontPadding = false
                 setPadding(0, dp(7), 0, 0)
             })
-            addView(TextView(context).apply {
+            val nextText = TextView(context).apply {
                 text = item.next
-                textSize = 12f
-                setTextColor(0xFF8EA0B8.toInt())
-            })
+                textSize = 13f
+                setTextColor(if (item.active) 0xFF6B7280.toInt() else 0xFF9CA3AF.toInt())
+            }
+            countdownViews[instanceId] = nextText
+            addView(nextText)
             addView(TextView(context).apply {
                 text = item.rule
                 textSize = 12f
@@ -547,13 +580,15 @@ class AlarmListActivity : AppCompatActivity() {
             isHapticFeedbackEnabled = false
             isSoundEffectsEnabled = false
             setOnClickListener {
+                val tempId = java.util.UUID.randomUUID().toString()
                 val newInstance = AlarmInstance(
+                    id = tempId,
                     type = feature,
-                    title = defaultAlarmName(feature)
+                    title = defaultAlarmName(feature),
+                    dateMs = System.currentTimeMillis()
                 )
                 alarmInstances.add(newInstance)
-                saveUiState()
-                renderEdit(newInstance.id)
+                renderEdit(tempId, isNew = true)
             }
             addView(iconTile(feature))
             addView(LinearLayout(context).apply {
@@ -581,19 +616,31 @@ class AlarmListActivity : AppCompatActivity() {
         }
     }
 
-    private fun renderEdit(instanceId: String) {
+    private fun renderEdit(instanceId: String, isNew: Boolean = false) {
         val instance = alarmInstances.firstOrNull { it.id == instanceId } ?: return
+        val isSameInstance = instanceId == currentEditingInstanceId
         currentEditingInstanceId = instanceId
         val feature = instance.type
-        editHour = instance.hour
-        editMinute = instance.minute
-        loadConfigFromInstance(instance)
+        // Only load from stored instance on first entry, not on re-render within the same edit session.
+        // Otherwise dialog changes (repeat, date, etc.) get overwritten by stale instance data.
+        if (!isSameInstance) {
+            editHour = instance.hour
+            editMinute = instance.minute
+            loadConfigFromInstance(instance)
+        }
         selectNavOnly(Tab.FUNCTIONS)
         val rootEdit = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xFFFFFFFF.toInt())
         }
-        rootEdit.addView(topBar(feature.title, feature.accent, onCancel = { selectTab(Tab.FUNCTIONS) }) {
+        rootEdit.addView(topBar(feature.title, feature.accent, onCancel = {
+            // Discard new (unsaved) instance on cancel
+            if (isNew) {
+                alarmInstances.removeAll { it.id == instanceId }
+                cancelScheduledAlarmsForInstance(instanceId)
+            }
+            selectTab(Tab.FUNCTIONS)
+        }) {
             // Save: serialize edit state back into instance
             val updatedConfig = buildConfigForType(feature)
             val updatedInstance = instance.copy(
@@ -620,7 +667,7 @@ class AlarmListActivity : AppCompatActivity() {
         }
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(18), dp(20), dp(24))
+            setPadding(dp(20), dp(8), dp(20), dp(24))
         }
         if (feature == FeatureType.SHIFT) {
             val instTitle = instance.title
@@ -656,13 +703,14 @@ class AlarmListActivity : AppCompatActivity() {
                 FeatureType.LUNAR -> {
                     column.addView(settingsRow("农历日期", lunarDateSummary, true) { showLunarDateDialog(feature.accent) })
                     column.addView(settingsRow("重复", lunarRepeatSummary, true) { showLunarRepeatDialog(instanceId) })
+                    column.addView(lunarAdvanceRow(instanceId))
                 }
                 FeatureType.SHIFT -> Unit
             }
             column.addView(ringtoneSettingsRow(instanceId))
             column.addView(vibrationButtonRow(instanceId))
             column.addView(settingsRow("响铃时长", "${ringDurationMinutes}分钟", true) { showNumberOptionDialog("响铃时长", ringDurationMinutes, 1..10, "分钟", feature.accent) { ringDurationMinutes = it; renderEdit(instanceId) } })
-            column.addView(settingsRow("贪睡间隔", "${snoozeMinutes}分钟", true) { showNumberOptionDialog("贪睡间隔", snoozeMinutes, 1..30, "分钟", feature.accent) { snoozeMinutes = it; renderEdit(instanceId) } })
+            column.addView(snoozeSettingsRow(instanceId))
         }
         scroll.addView(column)
         rootEdit.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -713,13 +761,13 @@ class AlarmListActivity : AppCompatActivity() {
     }
 
     private fun timeWheels(hour: Int, minute: Int, onChange: (Int, Int) -> Unit): View {
-        val hourWheel = WheelView(this, 48, 5).apply {
+        val hourWheel = WheelView(this, 48, 3).apply {
             isCyclic = true
             items = (0..23).map { String.format("%02d", it) }
             currentIndex = hour
             onIndexChanged = { onChange(it, minute) }
         }
-        val minuteWheel = WheelView(this, 48, 5).apply {
+        val minuteWheel = WheelView(this, 48, 3).apply {
             isCyclic = true
             items = (0..59).map { String.format("%02d", it) }
             currentIndex = minute
@@ -728,7 +776,7 @@ class AlarmListActivity : AppCompatActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(dp(48), dp(10), dp(48), dp(24))
+            setPadding(dp(40), 0, dp(40), dp(4))
             addView(hourWheel, LinearLayout.LayoutParams(0, -2, 1f))
             addView(TextView(context).apply {
                 text = ":"
@@ -739,7 +787,7 @@ class AlarmListActivity : AppCompatActivity() {
                 background = null
                 isHapticFeedbackEnabled = false
                 isSoundEffectsEnabled = false
-            }, LinearLayout.LayoutParams(dp(36), dp(240)))
+            }, LinearLayout.LayoutParams(dp(36), -2))
             addView(minuteWheel, LinearLayout.LayoutParams(0, -2, 1f))
         }
     }
@@ -1877,7 +1925,7 @@ class AlarmListActivity : AppCompatActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(13), dp(16), dp(13))
+            setPadding(dp(16), dp(8), dp(16), dp(8))
             isClickable = true
             isFocusable = true
             isHapticFeedbackEnabled = false
@@ -1903,21 +1951,16 @@ class AlarmListActivity : AppCompatActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setPadding(dp(16), dp(10), dp(16), dp(10))
             background = rounded(0xFFFFFFFF.toInt(), dp(0))
             isHapticFeedbackEnabled = false
             isSoundEffectsEnabled = false
-            addView(TextView(context).apply {
-                text = "响铃时振动"
-                textSize = 15f
-                setTextColor(0xFF111827.toInt())
-            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(labelTextView("响铃时振动"), LinearLayout.LayoutParams(0, -2, 1f))
             addView(MaterialSwitch(context).apply {
                 isChecked = vibrationEnabled
                 setOnCheckedChangeListener { _, checked ->
                     vibrationEnabled = checked
                     saveUiState()
-                    renderEdit(instanceId)
                 }
             })
             setOnClickListener {
@@ -1927,11 +1970,125 @@ class AlarmListActivity : AppCompatActivity() {
         }
     }
 
+    private fun snoozeSettingsRow(instanceId: String): View {
+        val inst = alarmInstances.firstOrNull { it.id == instanceId } ?: return View(this)
+        val ctx = this
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+            background = rounded(0xFFFFFFFF.toInt(), dp(0))
+            isHapticFeedbackEnabled = false
+            isSoundEffectsEnabled = false
+        }
+        // Reusable update function — only rebuilds this row, not the whole page
+        fun rebuildRow() {
+            row.removeAllViews()
+            row.addView(labelTextView("再次响铃"), LinearLayout.LayoutParams(0, -2, 1f))
+            if (snoozeEnabled) {
+                row.addView(TextView(ctx).apply {
+                    text = "${snoozeMinutes}分钟"
+                    textSize = 14f
+                    setTextColor(0xFF8EA0B8.toInt())
+                    gravity = Gravity.RIGHT
+                    setPadding(0, 0, dp(16), 0)
+                    isClickable = true
+                    isFocusable = true
+                    isHapticFeedbackEnabled = false
+                    isSoundEffectsEnabled = false
+                    setOnClickListener {
+                        showNumberOptionDialog("再次响铃间隔", snoozeMinutes, 1..30, "分钟", inst.type.accent) {
+                            snoozeMinutes = it
+                            saveUiState()
+                            rebuildRow()
+                        }
+                    }
+                })
+            }
+            row.addView(MaterialSwitch(ctx).apply {
+                isChecked = snoozeEnabled
+                setOnCheckedChangeListener { _, checked ->
+                    snoozeEnabled = checked
+                    saveUiState()
+                    rebuildRow()
+                }
+            })
+            // Row tap opens minutes dialog (not toggle switch)
+            row.setOnClickListener {
+                if (snoozeEnabled) {
+                    showNumberOptionDialog("再次响铃间隔", snoozeMinutes, 1..30, "分钟", inst.type.accent) {
+                        snoozeMinutes = it
+                        saveUiState()
+                        rebuildRow()
+                    }
+                }
+            }
+        }
+        rebuildRow()
+        return row
+    }
+
+    private fun lunarAdvanceRow(instanceId: String): View {
+        val inst = alarmInstances.firstOrNull { it.id == instanceId } ?: return View(this)
+        val ctx = this
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+            background = rounded(0xFFFFFFFF.toInt(), dp(0))
+            isHapticFeedbackEnabled = false
+            isSoundEffectsEnabled = false
+        }
+        fun rebuildRow() {
+            row.removeAllViews()
+            row.addView(labelTextView("提前提醒"), LinearLayout.LayoutParams(0, -2, 1f))
+            if (lunarAdvanceEnabled) {
+                row.addView(TextView(ctx).apply {
+                    text = "提前${lunarAdvanceDays}天"
+                    textSize = 14f
+                    setTextColor(0xFF8EA0B8.toInt())
+                    gravity = Gravity.RIGHT
+                    setPadding(0, 0, dp(16), 0)
+                    isClickable = true
+                    isFocusable = true
+                    isHapticFeedbackEnabled = false
+                    isSoundEffectsEnabled = false
+                    setOnClickListener {
+                        showNumberOptionDialog("提前提醒天数", lunarAdvanceDays, 1..30, "天", inst.type.accent) {
+                            lunarAdvanceDays = it
+                            saveUiState()
+                            rebuildRow()
+                        }
+                    }
+                })
+            }
+            row.addView(MaterialSwitch(ctx).apply {
+                isChecked = lunarAdvanceEnabled
+                setOnCheckedChangeListener { _, checked ->
+                    lunarAdvanceEnabled = checked
+                    saveUiState()
+                    rebuildRow()
+                }
+            })
+            row.setOnClickListener {
+                if (lunarAdvanceEnabled) {
+                    showNumberOptionDialog("提前提醒天数", lunarAdvanceDays, 1..30, "天", inst.type.accent) {
+                        lunarAdvanceDays = it
+                        saveUiState()
+                        rebuildRow()
+                    }
+                }
+            }
+        }
+        rebuildRow()
+        return row
+    }
+
     private fun settingsRow(label: String, value: String, arrow: Boolean, onClick: (() -> Unit)? = null): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
+            setPadding(dp(16), dp(10), dp(16), dp(10))
             background = rounded(0xFFFFFFFF.toInt(), dp(0))
             if (onClick != null) {
                 isClickable = true
@@ -1940,11 +2097,7 @@ class AlarmListActivity : AppCompatActivity() {
                 isSoundEffectsEnabled = false
                 setOnClickListener { onClick() }
             }
-            addView(TextView(context).apply {
-                text = label
-                textSize = 15f
-                setTextColor(0xFF111827.toInt())
-            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(labelTextView(label), LinearLayout.LayoutParams(0, -2, 1f))
             addView(TextView(context).apply {
                 text = value
                 textSize = 14f
@@ -1971,11 +2124,7 @@ class AlarmListActivity : AppCompatActivity() {
             isHapticFeedbackEnabled = false
             isSoundEffectsEnabled = false
             setOnClickListener { openSystemRingtonePicker() }
-            addView(TextView(context).apply {
-                text = "铃声"
-                textSize = 15f
-                setTextColor(0xFF111827.toInt())
-            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(labelTextView("铃声"), LinearLayout.LayoutParams(0, -2, 1f))
             addView(TextView(context).apply {
                 text = ringtoneSummary
                 textSize = 14f
@@ -2118,8 +2267,9 @@ class AlarmListActivity : AppCompatActivity() {
         val medName = instance.config["medicineName"] ?: ""
         val rawPlans = when (instance.type) {
             FeatureType.REGULAR -> {
-                val selections = (instance.config["repeatSelections"] ?: regularRepeatSelections.joinToString("|"))
-                    .split("|").filter { it.isNotBlank() }.toSet()
+                val raw = instance.config["repeatSelections"]?.takeIf { it.isNotBlank() }
+                    ?: regularRepeatSelections.joinToString("|")
+                val selections = raw.split("|").filter { it.isNotBlank() }.toSet()
                 UiAlarmSchedulePlanner.planRegular(
                     enabled = true, hour = hour, minute = minute, label = label,
                     ringtoneUri = selectedRingtoneUri, vibrate = vibrationEnabled,
@@ -2150,7 +2300,49 @@ class AlarmListActivity : AppCompatActivity() {
                     ringtoneUri = selectedRingtoneUri, vibrate = vibrationEnabled, medicineName = medName
                 )
             }
-            FeatureType.LUNAR -> emptyList()
+            FeatureType.LUNAR -> {
+                val repeat = instance.config["lunarRepeat"] ?: lunarRepeatSummary
+                val repeatMonths = when (repeat) {
+                    "每年" -> 12
+                    "每月" -> 1
+                    else -> 0
+                }
+                if (repeatMonths == 0) {
+                    emptyList()
+                } else {
+                    val lunarDate = instance.config["lunarDate"] ?: lunarDateSummary
+                    val advanceEnabled = instance.config["lunarAdvanceEnabled"]?.toBooleanStrictOrNull() ?: lunarAdvanceEnabled
+                    val advanceDays = instance.config["lunarAdvanceDays"]?.toIntOrNull() ?: lunarAdvanceDays
+                    val advanceMs = if (advanceEnabled) advanceDays.coerceIn(1, 30) * 24L * 3600 * 1000L else 0L
+                    val parsed = LunarHelper.parseLunarDate(lunarDate)
+                    val rawAnchorMs = if (parsed != null) {
+                        LunarHelper.nextLunarOccurrence(
+                            lunarMonth = parsed.first,
+                            lunarDay = parsed.second,
+                            isLeapMonth = false,
+                            hour = hour, minute = minute,
+                            repeatMonths = repeatMonths,
+                            nowMs = System.currentTimeMillis()
+                        )
+                    } else {
+                        if (dateMs > 0L) dateMs else System.currentTimeMillis()
+                    }
+                    val anchorMs = (rawAnchorMs - advanceMs).coerceAtLeast(System.currentTimeMillis() + 60_000L)
+                    listOf(
+                        UiAlarmSchedulePlanner.SchedulePlan(
+                            id = "alarm_ui_lunar",
+                            hour = hour, minute = minute,
+                            intervalDays = 0,
+                            startDateMs = anchorMs,
+                            label = label,
+                            note = "农历$lunarDate",
+                            ringtoneUri = selectedRingtoneUri,
+                            vibrate = vibrationEnabled,
+                            repeatMonths = repeatMonths
+                        )
+                    )
+                }
+            }
         }
         // Make planner IDs instance-unique
         return rawPlans.map { plan ->
@@ -2170,7 +2362,8 @@ class AlarmListActivity : AppCompatActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), 0, dp(8), dp(12))
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+            setBackgroundColor(0xFFFFFFFF.toInt())
             addView(TextView(context).apply {
                 text = "取消"
                 textSize = 14f
@@ -2360,7 +2553,9 @@ class AlarmListActivity : AppCompatActivity() {
         )
         FeatureType.LUNAR -> mapOf(
             "lunarDate" to lunarDateSummary,
-            "lunarRepeat" to lunarRepeatSummary
+            "lunarRepeat" to lunarRepeatSummary,
+            "lunarAdvanceDays" to lunarAdvanceDays.toString(),
+            "lunarAdvanceEnabled" to lunarAdvanceEnabled.toString()
         )
     }
 
@@ -2374,7 +2569,7 @@ class AlarmListActivity : AppCompatActivity() {
         when (instance.type) {
             FeatureType.REGULAR -> {
                 regularRepeatSummary = c["repeatSummary"] ?: regularRepeatSummary
-                c["repeatSelections"]?.let {
+                c["repeatSelections"]?.takeIf { it.isNotBlank() }?.let {
                     regularRepeatSelections.clear()
                     regularRepeatSelections.addAll(it.split("|").filter { s -> s.isNotBlank() })
                 }
@@ -2399,6 +2594,8 @@ class AlarmListActivity : AppCompatActivity() {
             FeatureType.LUNAR -> {
                 lunarDateSummary = c["lunarDate"] ?: lunarDateSummary
                 lunarRepeatSummary = c["lunarRepeat"] ?: lunarRepeatSummary
+                lunarAdvanceDays = c["lunarAdvanceDays"]?.toIntOrNull() ?: lunarAdvanceDays
+                lunarAdvanceEnabled = c["lunarAdvanceEnabled"]?.toBooleanStrictOrNull() ?: lunarAdvanceEnabled
             }
         }
     }
@@ -2429,7 +2626,17 @@ class AlarmListActivity : AppCompatActivity() {
                 }
             }
             FeatureType.SHIFT -> "每轮 ${instance.config["cycleDays"]?.toIntOrNull() ?: shiftCycleDays} 天"
-            FeatureType.LUNAR -> instance.config["lunarRepeat"] ?: lunarRepeatSummary
+            FeatureType.LUNAR -> {
+                val date = instance.config["lunarDate"] ?: lunarDateSummary
+                val repeat = instance.config["lunarRepeat"] ?: lunarRepeatSummary
+                val advanceEnabled = instance.config["lunarAdvanceEnabled"]?.toBooleanStrictOrNull() ?: false
+                val advanceDays = instance.config["lunarAdvanceDays"]?.toIntOrNull() ?: 0
+                if (advanceEnabled && advanceDays > 0) {
+                    "$date · $repeat · 提前${advanceDays}天"
+                } else {
+                    "$date · $repeat"
+                }
+            }
         }
     }
 
@@ -2442,15 +2649,124 @@ class AlarmListActivity : AppCompatActivity() {
     }
 
     private fun alarmInstanceNextText(instance: AlarmInstance): String {
-        // A simple next-ring text based on the first scheduled alarm for this instance
-        val scheduled = AlarmScheduler.getAllAlarms(this)
-            .filter { it.id.startsWith("alarm_ui_${instance.id}_") }
-            .minByOrNull { it.nextTimeMs }
-        return if (scheduled != null && scheduled.nextTimeMs > 0L) {
-            val sdf = SimpleDateFormat("MM/dd HH:mm", Locale.CHINA)
-            "下次响铃：${sdf.format(java.util.Date(scheduled.nextTimeMs))}"
+        if (!instance.active) return "已关闭"
+        val nextMs = nextRingTimeMs(instance) ?: return "待计算"
+        return nextRingDisplayText(instance.id, nextMs)
+    }
+
+    private fun datePrefixFor(nextMs: Long, showYear: Boolean): String {
+        val cal = java.util.Calendar.getInstance().apply { timeInMillis = nextMs }
+        val year = cal.get(java.util.Calendar.YEAR) % 100
+        val month = cal.get(java.util.Calendar.MONTH) + 1
+        val day = cal.get(java.util.Calendar.DAY_OF_MONTH)
+        val hour = cal.get(java.util.Calendar.HOUR_OF_DAY)
+        val minute = String.format("%02d", cal.get(java.util.Calendar.MINUTE))
+        return if (showYear) {
+            "下次提醒：${year}年${month}月${day}日 ${hour}:${minute}"
         } else {
-            "下次响铃：待计算"
+            "下次提醒：${month}月${day}日 ${hour}:${minute}"
+        }
+    }
+
+    private fun nextRingDisplayText(instanceId: String, nextMs: Long, nowMs: Long = System.currentTimeMillis()): String {
+        val countdown = countdownText(nextMs, nowMs)
+        val showYear = countdown.contains("年")
+        val prefix = datePrefixFor(nextMs, showYear)
+        return "$prefix  |  $countdown"
+    }
+
+    private fun nextRingTimeMs(instance: AlarmInstance): Long? {
+        val plans = schedulePlansForInstance(instance.copy(active = true))
+        if (plans.isEmpty()) return null
+        val now = System.currentTimeMillis()
+        return plans.minOfOrNull { plan ->
+            when {
+                plan.repeatMonths > 0 -> AlarmTimeCalculator.calculateNextMonthInterval(
+                    plan.startDateMs, plan.repeatMonths, now
+                )
+                plan.repeatMinutes > 0 -> AlarmTimeCalculator.calculateNextMinuteInterval(
+                    plan.startDateMs, plan.repeatMinutes, now
+                )
+                else -> AlarmTimeCalculator.calculateNextTime(
+                    plan.hour, plan.minute, plan.intervalDays, plan.startDateMs, now
+                ).nextTimeMs
+            }
+        }
+    }
+
+    private fun countdownText(nextMs: Long, nowMs: Long = System.currentTimeMillis()): String {
+        val diffMs = nextMs - nowMs
+        if (diffMs <= 0L) return "即将响铃"
+
+        val totalSeconds = diffMs / 1000L
+        val rawMonths = totalSeconds / (30L * 24 * 3600)
+        val years = rawMonths / 12
+        val months = rawMonths % 12
+        val remainderAfterMonths = totalSeconds % (30L * 24 * 3600)
+        val days = remainderAfterMonths / (24L * 3600)
+        val remainderAfterDays = remainderAfterMonths % (24L * 3600)
+        val hours = remainderAfterDays / 3600
+        val remainderAfterHours = remainderAfterDays % 3600
+        val minutes = remainderAfterHours / 60
+        val seconds = remainderAfterHours % 60
+
+        val parts = mutableListOf<String>()
+        if (years > 0) parts.add("${years}年")
+        if (months > 0) parts.add("${months}个月")
+        if (days > 0) parts.add("${days}天")
+        // Only show sub-day units when no years
+        if (years <= 0 && hours > 0) parts.add("${hours}小时")
+        // Sub-month precision only when no months/years present
+        if (years <= 0 && rawMonths <= 0 && minutes > 0) parts.add("${minutes}分钟")
+        if (years <= 0 && rawMonths <= 0) parts.add("${seconds}秒")
+
+        return "还有 " + parts.joinToString("")
+    }
+
+    private fun startCountdownRefresh() {
+        if (countdownRunning) return
+        countdownRunning = true
+        countdownHandler.post(object : Runnable {
+            override fun run() {
+                if (!countdownRunning) return
+                refreshAllCountdowns()
+                countdownHandler.postDelayed(this, 1_000L)
+            }
+        })
+    }
+
+    private fun stopCountdownRefresh() {
+        countdownRunning = false
+        countdownHandler.removeCallbacksAndMessages(null)
+    }
+
+    private fun refreshAllCountdowns() {
+        if (countdownViews.isEmpty()) return
+        val now = System.currentTimeMillis()
+        alarmInstances.forEach { inst ->
+            countdownViews[inst.id]?.let { view ->
+                if (inst.active) {
+                    // Recompute next ring time only when cache is stale
+                    var nextMs = nextRingMsCache[inst.id]
+                    if (nextMs == null || nextMs <= now) {
+                        nextMs = nextRingTimeMs(inst)
+                        if (nextMs != null) nextRingMsCache[inst.id] = nextMs
+                    }
+                    if (nextMs != null) {
+                        view.text = nextRingDisplayText(inst.id, nextMs, now)
+                        // Urgency highlight: red within 1 min, orange within 5 min
+                        val remaining = nextMs - now
+                        view.setTextColor(when {
+                            remaining <= 60_000L -> 0xFFFF7043.toInt()  // red-orange
+                            remaining <= 300_000L -> 0xFFF59E0B.toInt() // amber
+                            else -> 0xFF6B7280.toInt()                  // normal gray
+                        })
+                    } else {
+                        view.text = "待计算"
+                        view.setTextColor(0xFF6B7280.toInt())
+                    }
+                }
+            }
         }
     }
 
@@ -2467,9 +2783,10 @@ class AlarmListActivity : AppCompatActivity() {
         vibrationEnabled = statePrefs.getBoolean("vibrationEnabled", vibrationEnabled)
         ringDurationMinutes = statePrefs.getInt("ringDurationMinutes", ringDurationMinutes)
         snoozeMinutes = statePrefs.getInt("snoozeMinutes", snoozeMinutes)
+        snoozeEnabled = statePrefs.getBoolean("snoozeEnabled", snoozeEnabled)
         // Load edit-buffer singletons (pre-fill for new alarm creation)
         regularRepeatSummary = statePrefs.getString("regularRepeatSummary", regularRepeatSummary) ?: regularRepeatSummary
-        statePrefs.getString("regularRepeatSelections", null)?.let {
+        statePrefs.getString("regularRepeatSelections", null)?.takeIf { it.isNotBlank() }?.let {
             regularRepeatSelections.clear()
             regularRepeatSelections.addAll(it.split("|").filter { item -> item.isNotBlank() })
         }
@@ -2485,6 +2802,8 @@ class AlarmListActivity : AppCompatActivity() {
         }
         lunarDateSummary = statePrefs.getString("lunarDateSummary", lunarDateSummary) ?: lunarDateSummary
         lunarRepeatSummary = statePrefs.getString("lunarRepeatSummary", lunarRepeatSummary) ?: lunarRepeatSummary
+        lunarAdvanceDays = statePrefs.getInt("lunarAdvanceDays", lunarAdvanceDays)
+        lunarAdvanceEnabled = statePrefs.getBoolean("lunarAdvanceEnabled", lunarAdvanceEnabled)
         // Load alarm instances
         val json = statePrefs.getString("alarm_instances_json", null)
         if (json != null) {
@@ -2506,6 +2825,7 @@ class AlarmListActivity : AppCompatActivity() {
             .putBoolean("vibrationEnabled", vibrationEnabled)
             .putInt("ringDurationMinutes", ringDurationMinutes)
             .putInt("snoozeMinutes", snoozeMinutes)
+            .putBoolean("snoozeEnabled", snoozeEnabled)
             .putString("regularRepeatSummary", regularRepeatSummary)
             .putString("regularRepeatSelections", regularRepeatSelections.joinToString("|"))
             .putInt("specialRepeatValue", specialRepeatValue)
@@ -2515,6 +2835,8 @@ class AlarmListActivity : AppCompatActivity() {
             .putString("specialWeekdaySelections", specialWeekdaySelections.joinToString("|"))
             .putString("lunarDateSummary", lunarDateSummary)
             .putString("lunarRepeatSummary", lunarRepeatSummary)
+            .putInt("lunarAdvanceDays", lunarAdvanceDays)
+            .putBoolean("lunarAdvanceEnabled", lunarAdvanceEnabled)
             .putString("alarm_instances_json", serializeInstancesToJson(alarmInstances))
             .apply()
     }
@@ -2563,6 +2885,13 @@ class AlarmListActivity : AppCompatActivity() {
     @Suppress("DEPRECATION")
     private fun currentVersionName(): String =
         packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0.13"
+
+    private fun labelTextView(text: String): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 16f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(0xFF111827.toInt())
+    }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
 
