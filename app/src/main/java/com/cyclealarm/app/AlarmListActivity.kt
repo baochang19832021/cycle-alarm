@@ -131,7 +131,6 @@ class AlarmListActivity : AppCompatActivity() {
     private var editMinute = 0
     private var shiftCycleDays = 4
     private val shiftDaySummaries = mutableListOf("07:30", "07:30 +1", "19:30", "休")
-    private var deleteShiftDayIndex: Int? = null
     private var selectedCalendarDay: Calendar = Calendar.getInstance()
     private val alarmInstances = mutableListOf<AlarmInstance>()
     private var ringtoneSummary = "默认铃声"
@@ -161,6 +160,9 @@ class AlarmListActivity : AppCompatActivity() {
     private var lunarRepeatSummary = "每年"
     private var lunarAdvanceDays = 3
     private var lunarAdvanceEnabled = false
+    private var editTitle: String? = null
+    private var editDateMs: Long? = null
+    private var editMedicineName: String? = null
 
     private val ringtonePickerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -624,6 +626,9 @@ class AlarmListActivity : AppCompatActivity() {
         // Only load from stored instance on first entry, not on re-render within the same edit session.
         // Otherwise dialog changes (repeat, date, etc.) get overwritten by stale instance data.
         if (!isSameInstance) {
+            editTitle = null
+            editDateMs = null
+            editMedicineName = null
             editHour = instance.hour
             editMinute = instance.minute
             loadConfigFromInstance(instance)
@@ -639,6 +644,8 @@ class AlarmListActivity : AppCompatActivity() {
                 alarmInstances.removeAll { it.id == instanceId }
                 cancelScheduledAlarmsForInstance(instanceId)
             }
+            editTitle = null; editDateMs = null; editMedicineName = null
+            currentEditingInstanceId = null
             selectTab(Tab.FUNCTIONS)
         }) {
             // Save: serialize edit state back into instance
@@ -658,6 +665,8 @@ class AlarmListActivity : AppCompatActivity() {
             val scheduledCount = replaceScheduledAlarmsForInstance(updatedInstance)
             Toast.makeText(this, saveResultText(feature, scheduledCount), Toast.LENGTH_SHORT).show()
             maybeShowReliabilityReminder()
+            editTitle = null; editDateMs = null; editMedicineName = null
+            currentEditingInstanceId = null
             selectTab(Tab.ALARMS)
         })
 
@@ -776,7 +785,7 @@ class AlarmListActivity : AppCompatActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(dp(40), 0, dp(40), dp(4))
+            setPadding(dp(40), dp(10), dp(40), dp(10))
             addView(hourWheel, LinearLayout.LayoutParams(0, -2, 1f))
             addView(TextView(context).apply {
                 text = ":"
@@ -817,62 +826,32 @@ class AlarmListActivity : AppCompatActivity() {
     private fun dayCard(index: Int, summary: String): View {
         val isRest = summary == "休"
         val displaySummary = shiftDayCardSummary(summary)
-        return FrameLayout(this).apply {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+            background = rounded(if (isRest) 0xFFF8FAFC.toInt() else 0xFFFFFFFF.toInt(), dp(10), 0xFFE8EDF5.toInt())
             isHapticFeedbackEnabled = false
             isSoundEffectsEnabled = false
-            setOnLongClickListener {
-                deleteShiftDayIndex = index
-                currentEditingInstanceId?.let { renderEdit(it) }
-                true
-            }
-            addView(LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
+            setOnClickListener { showShiftDayDialog(index) }
+            addView(TextView(context).apply {
+                text = "第${index + 1}天"
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
                 textAlignment = View.TEXT_ALIGNMENT_CENTER
-                background = rounded(if (isRest) 0xFFF8FAFC.toInt() else 0xFFFFFFFF.toInt(), dp(10), 0xFFE8EDF5.toInt())
-                isHapticFeedbackEnabled = false
-                isSoundEffectsEnabled = false
-                setOnClickListener {
-                    if (deleteShiftDayIndex == null) showShiftDayDialog(index)
-                }
-                setOnLongClickListener {
-                    deleteShiftDayIndex = index
-                    currentEditingInstanceId?.let { renderEdit(it) }
-                    true
-                }
-                addView(TextView(context).apply {
-                    text = "第${index + 1}天"
-                    textSize = 13f
-                    typeface = Typeface.DEFAULT_BOLD
-                    gravity = Gravity.CENTER
-                    textAlignment = View.TEXT_ALIGNMENT_CENTER
-                    setTextColor(0xFF111827.toInt())
-                })
-                addView(TextView(context).apply {
-                    text = displaySummary
-                    textSize = if (displaySummary.contains("\n")) 14f else 15f
-                    maxLines = 2
-                    typeface = Typeface.DEFAULT_BOLD
-                    gravity = Gravity.CENTER
-                    textAlignment = View.TEXT_ALIGNMENT_CENTER
-                    setTextColor(if (isRest) 0xFF111827.toInt() else FeatureType.SHIFT.accent)
-                    setPadding(0, dp(5), 0, 0)
-                })
-            }, FrameLayout.LayoutParams(-1, -1))
-            if (deleteShiftDayIndex == index) {
-                addView(ImageButton(context).apply {
-                    setImageResource(R.drawable.ic_close)
-                    background = null
-                    isClickable = true
-                    isFocusable = true
-                    isHapticFeedbackEnabled = false
-                    isSoundEffectsEnabled = false
-                    setOnClickListener { deleteShiftDayCard(index) }
-                }, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.TOP or Gravity.END).apply {
-                    topMargin = dp(4)
-                    marginEnd = dp(4)
-                })
-            }
+                setTextColor(0xFF111827.toInt())
+            })
+            addView(TextView(context).apply {
+                text = displaySummary
+                textSize = if (displaySummary.contains("\n")) 14f else 15f
+                maxLines = 2
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+                setTextColor(if (isRest) 0xFF111827.toInt() else FeatureType.SHIFT.accent)
+                setPadding(0, dp(5), 0, 0)
+            })
         }
     }
 
@@ -896,7 +875,6 @@ class AlarmListActivity : AppCompatActivity() {
             isHapticFeedbackEnabled = false
             isSoundEffectsEnabled = false
             setOnClickListener {
-                deleteShiftDayIndex = null
                 shiftDaySummaries.add("休")
                 shiftCycleDays = shiftDaySummaries.size
                 saveUiState()
@@ -939,17 +917,55 @@ class AlarmListActivity : AppCompatActivity() {
         }
         column.addView(enabledSwitch, LinearLayout.LayoutParams(-1, dp(54)))
         val dayTimes = if (shiftDaySummaries[index] == "休") mutableListOf("07:30") else shiftDaySummaries[index].split("、").toMutableList()
+        val ctx = this
+        fun rebuildDialog(dialog: BottomSheetDialog) {
+            applyShiftDaySummaryChange(index, dayTimes.joinToString("、"))
+            saveUiState()
+            dialog.dismiss()
+            currentEditingInstanceId?.let { renderEdit(it) }
+        }
         val times = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         dayTimes.forEachIndexed { timeIndex, time ->
-            times.addView(settingsRow("提醒时间", time, true) {
-                showTimeOnlyDialog(time, FeatureType.SHIFT.accent) { next ->
-                    dayTimes[timeIndex] = next
-                    applyShiftDaySummaryChange(index, dayTimes.joinToString("、"))
-                    saveUiState()
-                    dialog.dismiss()
-                    currentEditingInstanceId?.let { renderEdit(it) }
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), dp(10), dp(4), dp(10))
+                background = rounded(0xFFFFFFFF.toInt(), dp(0))
+            }
+            row.addView(labelTextView("提醒时间"), LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(TextView(ctx).apply {
+                text = time
+                textSize = 14f
+                setTextColor(0xFF8EA0B8.toInt())
+                gravity = Gravity.END
+                setPadding(0, 0, dp(4), 0)
+                isClickable = true; isFocusable = true
+                setOnClickListener {
+                    showTimeOnlyDialog(time, FeatureType.SHIFT.accent) { next ->
+                        dayTimes[timeIndex] = next
+                        rebuildDialog(dialog)
+                    }
                 }
             })
+            // Delete ×
+            row.addView(TextView(ctx).apply {
+                text = "×"
+                textSize = 18f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFFCBD5E1.toInt())
+                gravity = Gravity.CENTER
+                setPadding(dp(10), 0, dp(10), 0)
+                isClickable = true; isFocusable = true
+                setOnClickListener {
+                    if (dayTimes.size > 1) {
+                        dayTimes.removeAt(timeIndex)
+                        rebuildDialog(dialog)
+                    } else {
+                        Toast.makeText(ctx, "至少保留1个提醒时间", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            })
+            times.addView(row)
         }
         column.addView(times)
         column.addView(TextView(this).apply {
@@ -974,18 +990,6 @@ class AlarmListActivity : AppCompatActivity() {
         }
         dialog.setContentView(column)
         dialog.show()
-    }
-
-    private fun deleteShiftDayCard(index: Int) {
-        if (shiftDaySummaries.size <= 1) {
-            Toast.makeText(this, "至少保留1天", Toast.LENGTH_SHORT).show()
-            return
-        }
-        shiftDaySummaries.removeAt(index)
-        shiftCycleDays = shiftDaySummaries.size
-        deleteShiftDayIndex = null
-        saveUiState()
-        currentEditingInstanceId?.let { renderEdit(it) }
     }
 
     private fun applyShiftDaySummaryChange(index: Int, summary: String) {
@@ -1395,8 +1399,9 @@ class AlarmListActivity : AppCompatActivity() {
 
     private fun showTitleDialog(instanceId: String) {
         val inst = alarmInstances.firstOrNull { it.id == instanceId } ?: return
+        val currentTitle = editTitle ?: inst.title
         val input = EditText(this).apply {
-            setText(inst.title)
+            setText(currentTitle)
             selectAll()
             inputType = InputType.TYPE_CLASS_TEXT
             setSingleLine(true)
@@ -1408,10 +1413,8 @@ class AlarmListActivity : AppCompatActivity() {
             .setPositiveButton("完成") { _, _ ->
                 val next = input.text?.toString()?.trim().orEmpty()
                 if (next.isNotEmpty()) {
-                    val idx = alarmInstances.indexOfFirst { it.id == instanceId }
-                    if (idx >= 0) alarmInstances[idx] = alarmInstances[idx].copy(title = next)
+                    editTitle = next
                 }
-                saveUiState()
                 renderEdit(instanceId)
             }
             .show()
@@ -1435,9 +1438,7 @@ class AlarmListActivity : AppCompatActivity() {
                     set(Calendar.MONTH, picker.month)
                     set(Calendar.DAY_OF_MONTH, picker.dayOfMonth)
                 }.timeInMillis
-                val idx = alarmInstances.indexOfFirst { it.id == instanceId }
-                if (idx >= 0) alarmInstances[idx] = alarmInstances[idx].copy(dateMs = newDateMs)
-                saveUiState()
+                editDateMs = newDateMs
                 renderEdit(instanceId)
             }
             .show()
@@ -2101,9 +2102,11 @@ class AlarmListActivity : AppCompatActivity() {
             addView(TextView(context).apply {
                 text = value
                 textSize = 14f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 setTextColor(if (value == "✓") 0xFF4A6CF7.toInt() else 0xFF8EA0B8.toInt())
-                gravity = Gravity.RIGHT
-            })
+                gravity = Gravity.END
+            }, LinearLayout.LayoutParams(0, -2, 1f))
             if (arrow) addView(TextView(context).apply {
                 text = "›"
                 textSize = 22f
@@ -2117,7 +2120,7 @@ class AlarmListActivity : AppCompatActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
+            setPadding(dp(16), dp(10), dp(16), dp(10))
             background = rounded(0xFFFFFFFF.toInt(), dp(0))
             isClickable = true
             isFocusable = true
@@ -2159,7 +2162,7 @@ class AlarmListActivity : AppCompatActivity() {
         this.text = text
         textSize = 13f
         setTextColor(0xFF94A3B8.toInt())
-        setPadding(0, dp(14), 0, dp(8))
+        setPadding(0, dp(12), 0, dp(8))
     }
 
     private fun defaultAlarmName(feature: FeatureType): String =
@@ -2173,7 +2176,9 @@ class AlarmListActivity : AppCompatActivity() {
     // alarmTitle removed — use instance.title directly
 
     private fun medicineNameText(instanceId: String): String =
-        alarmInstances.firstOrNull { it.id == instanceId }?.config?.get("medicineName")?.ifEmpty { "未设置" } ?: "未设置"
+        editMedicineName?.ifEmpty { "未设置" }
+            ?: alarmInstances.firstOrNull { it.id == instanceId }?.config?.get("medicineName")?.ifEmpty { "未设置" }
+            ?: "未设置"
 
     private fun showMedicineNameDialog(instanceId: String) {
         val inst = alarmInstances.firstOrNull { it.id == instanceId } ?: return
@@ -2190,12 +2195,7 @@ class AlarmListActivity : AppCompatActivity() {
             .setNegativeButton("取消", null)
             .setPositiveButton("确定") { _, _ ->
                 val next = input.text.toString().trim()
-                val idx = alarmInstances.indexOfFirst { it.id == instanceId }
-                if (idx >= 0) {
-                    val updatedConfig = alarmInstances[idx].config.toMutableMap().apply { put("medicineName", next) }
-                    alarmInstances[idx] = alarmInstances[idx].copy(config = updatedConfig)
-                }
-                saveUiState()
+                editMedicineName = next
                 renderEdit(instanceId)
             }
             .show()
@@ -2560,6 +2560,11 @@ class AlarmListActivity : AppCompatActivity() {
     }
 
     private fun medNameForType(type: FeatureType): String {
+        // Check edit buffer for the currently editing instance
+        if (editMedicineName != null && currentEditingInstanceId != null) {
+            val editing = alarmInstances.firstOrNull { it.id == currentEditingInstanceId }
+            if (editing?.type == type) return editMedicineName ?: ""
+        }
         return alarmInstances.find { it.type == type && it.config.containsKey("medicineName") }
             ?.config?.get("medicineName") ?: ""
     }
@@ -2601,8 +2606,9 @@ class AlarmListActivity : AppCompatActivity() {
     }
 
     private fun alarmInstanceDateText(instance: AlarmInstance): String {
-        if (instance.dateMs <= 0L) return "未设置"
-        val cal = Calendar.getInstance().apply { timeInMillis = instance.dateMs }
+        val dateMs = instanceDateMs(instance.id)
+        if (dateMs <= 0L) return "未设置"
+        val cal = Calendar.getInstance().apply { timeInMillis = dateMs }
         val sdf = SimpleDateFormat("yyyy/M/d", Locale.CHINA)
         val weekDay = listOf("日", "一", "二", "三", "四", "五", "六")[cal.get(Calendar.DAY_OF_WEEK) - 1]
         return "${sdf.format(cal.time)} 周$weekDay"
@@ -2641,11 +2647,11 @@ class AlarmListActivity : AppCompatActivity() {
     }
 
     private fun instanceTitle(instanceId: String): String? {
-        return alarmInstances.firstOrNull { it.id == instanceId }?.title
+        return editTitle ?: alarmInstances.firstOrNull { it.id == instanceId }?.title
     }
 
     private fun instanceDateMs(instanceId: String): Long {
-        return alarmInstances.firstOrNull { it.id == instanceId }?.dateMs ?: 0L
+        return editDateMs ?: alarmInstances.firstOrNull { it.id == instanceId }?.dateMs ?: 0L
     }
 
     private fun alarmInstanceNextText(instance: AlarmInstance): String {

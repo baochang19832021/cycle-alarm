@@ -237,14 +237,14 @@ class UiAlarmSchedulePlannerTest {
     }
 
     @Test
-    fun firstShiftDayTimeChangeAppliesToAllWorkDaysAndKeepsRestDays() {
+    fun firstShiftDayChangeOnlyAffectsThatDay() {
         val nextSummaries = UiAlarmSchedulePlanner.applyShiftDaySummaryChange(
             currentSummaries = listOf("07:30", "07:30", "07:30", "07:30", "07:30", "07:30", "休"),
             changedIndex = 0,
             newSummary = "05:30"
         )
 
-        assertEquals(listOf("05:30", "05:30", "05:30", "05:30", "05:30", "05:30", "休"), nextSummaries)
+        assertEquals(listOf("05:30", "07:30", "07:30", "07:30", "07:30", "07:30", "休"), nextSummaries)
     }
 
     @Test
@@ -255,7 +255,7 @@ class UiAlarmSchedulePlannerTest {
             newSummary = "07:30"
         )
 
-        assertEquals(listOf("07:30", "07:30", "休", "休"), nextSummaries)
+        assertEquals(listOf("07:30", "05:30", "休", "休"), nextSummaries)
     }
 
     @Test

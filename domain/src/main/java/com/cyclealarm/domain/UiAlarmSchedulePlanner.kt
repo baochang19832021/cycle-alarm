@@ -289,13 +289,8 @@ object UiAlarmSchedulePlanner {
     ): List<String> {
         if (changedIndex !in currentSummaries.indices) return currentSummaries
         val normalized = newSummary.ifBlank { "休" }
-        if (changedIndex != 0 || normalized.contains("休")) {
-            return currentSummaries.mapIndexed { index, summary ->
-                if (index == changedIndex) normalized else summary
-            }
-        }
         return currentSummaries.mapIndexed { index, summary ->
-            if (index == changedIndex || !summary.contains("休")) normalized else summary
+            if (index == changedIndex) normalized else summary
         }
     }
 
