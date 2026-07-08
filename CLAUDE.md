@@ -12,7 +12,8 @@
 ## 新会话必读顺序
 
 1. `CLAUDE.md`（本文件）
-2. `CURRENT_STATUS.md` — 最新开发状态、版本号、验证结果
+2. `ERRORS.md` — 🔴 错误库，每次写代码前必读，避免重复犯错
+3. `CURRENT_STATUS.md` — 最新开发状态、版本号、验证结果
 3. `TASK_ROUTING.md` — 按任务类型路由到对应文档和 agent
 4. 相关 `.agents/*.md` — 按任务类型读取
 5. `RULES_BEFORE_EDIT.md` — 修改前检查清单

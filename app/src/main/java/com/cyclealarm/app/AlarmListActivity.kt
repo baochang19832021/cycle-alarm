@@ -147,6 +147,8 @@ class AlarmListActivity : AppCompatActivity() {
     // Countdown refresh
     private val countdownViews = mutableMapOf<String, TextView>()
     private val nextRingMsCache = mutableMapOf<String, Long>()
+    private val alarmCardViews = mutableMapOf<String, View>()
+    private var deleteToolbarRef: View? = null
     private val countdownHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var countdownRunning = false
     private var regularRepeatSummary = "每周一、三、五"
@@ -380,11 +382,13 @@ class AlarmListActivity : AppCompatActivity() {
     private fun renderAlarmList() {
         countdownViews.clear()
         nextRingMsCache.clear()
+        alarmCardViews.clear()
         val topPadding = if (isAlarmDeleteMode) dp(52) else 0
         val column = baseScroll("闹钟", topPadding = topPadding)
         // Fixed delete toolbar outside ScrollView — always visible at top
         if (isAlarmDeleteMode) {
-            content.addView(deleteToolbar(), FrameLayout.LayoutParams(-1, -2).apply {
+            deleteToolbarRef = deleteToolbar()
+            content.addView(deleteToolbarRef, FrameLayout.LayoutParams(-1, -2).apply {
                 gravity = Gravity.TOP
             })
         }
@@ -452,6 +456,7 @@ class AlarmListActivity : AppCompatActivity() {
 
     private fun alarmCard(instanceId: String, item: DemoAlarm): View {
         return card().apply {
+            alarmCardViews[instanceId] = this
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
                 leftMargin = dp(8)
                 rightMargin = dp(8)
@@ -465,7 +470,8 @@ class AlarmListActivity : AppCompatActivity() {
             setOnClickListener {
                 if (isAlarmDeleteMode) {
                     if (instanceId in checkedInstanceIds) checkedInstanceIds.remove(instanceId) else checkedInstanceIds.add(instanceId)
-                    renderAlarmList()
+                    updateCardCheckbox(instanceId)
+                    updateDeleteToolbarState()
                 } else {
                     renderEdit(instanceId)
                 }
@@ -549,8 +555,8 @@ class AlarmListActivity : AppCompatActivity() {
             addView(TextView(context).apply {
                 text = item.rule
                 textSize = 12f
-                setTextColor(0xFF8EA0B8.toInt())
-                setPadding(0, dp(6), 0, 0)
+                setTextColor(0xFF9CA3AF.toInt())
+                setPadding(0, dp(3), 0, 0)
             })
         }
     }
@@ -2403,6 +2409,30 @@ class AlarmListActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateCardCheckbox(instanceId: String) {
+        val card = alarmCardViews[instanceId] as? ViewGroup ?: return
+        val checked = instanceId in checkedInstanceIds
+        val topLayer = card.getChildAt(0) as? ViewGroup ?: return
+        val top = topLayer.getChildAt(0) as? LinearLayout ?: return
+        // In delete mode, top has [title, checkbox] at indices 0 and 1
+        val checkbox = top.getChildAt(1) as? TextView ?: return
+        checkbox.text = if (checked) "✓" else ""
+        val bg = if (checked) 0xFF4A6CF7.toInt() else 0x00FFFFFF
+        val border = if (checked) 0xFF4A6CF7.toInt() else 0xFFCBD5E1.toInt()
+        checkbox.background = rounded(bg, dp(18), border)
+        checkbox.setTextColor(if (checked) 0xFFFFFFFF.toInt() else 0xFFCBD5E1.toInt())
+    }
+
+    private fun updateDeleteToolbarState() {
+        val toolbar = deleteToolbarRef as? LinearLayout ?: return
+        val accentColor = if (checkedInstanceIds.isEmpty()) 0xFFCBD5E1.toInt() else 0xFF4A6CF7.toInt()
+        // Delete button is the 3rd child (index 2): [取消, spacer, deleteBlock]
+        val deleteBlock = toolbar.getChildAt(2) as? LinearLayout ?: return
+        (0 until deleteBlock.childCount).forEach { idx ->
+            (deleteBlock.getChildAt(idx) as? TextView)?.setTextColor(accentColor)
+        }
+    }
+
     private fun deleteCheckedAlarms() {
         val toDelete = checkedInstanceIds.toList()
         for (instanceId in toDelete) {
@@ -2623,7 +2653,11 @@ class AlarmListActivity : AppCompatActivity() {
                 if (unit == "时分") {
                     val h = instance.config["repeatHours"]?.toIntOrNull() ?: specialRepeatHours
                     val m = instance.config["repeatMinutes"]?.toIntOrNull() ?: specialRepeatMinutes
-                    "每${h}小时${m}分钟"
+                    when {
+                        h > 0 && m > 0 -> "每${h}小时${m}分钟"
+                        h > 0 -> "每${h}小时"
+                        else -> "每${m}分钟"
+                    }
                 } else if (unit == "周") {
                     val weekdays = instance.config["weekdaySelections"]?.split("|")?.joinToString("、") ?: ""
                     "每${value}周（周$weekdays）"
@@ -2724,7 +2758,8 @@ class AlarmListActivity : AppCompatActivity() {
         if (years <= 0 && hours > 0) parts.add("${hours}小时")
         // Sub-month precision only when no months/years present
         if (years <= 0 && rawMonths <= 0 && minutes > 0) parts.add("${minutes}分钟")
-        if (years <= 0 && rawMonths <= 0) parts.add("${seconds}秒")
+        // Seconds only shown when within 24h — otherwise meaningless flicker
+        if (years <= 0 && rawMonths <= 0 && days == 0L) parts.add("${seconds}秒")
 
         return "还有 " + parts.joinToString("")
     }
@@ -2760,12 +2795,12 @@ class AlarmListActivity : AppCompatActivity() {
                     }
                     if (nextMs != null) {
                         view.text = nextRingDisplayText(inst.id, nextMs, now)
-                        // Urgency highlight: red within 1 min, orange within 5 min
+                        // Urgency: red < 10min, amber < 60min, else gray
                         val remaining = nextMs - now
                         view.setTextColor(when {
-                            remaining <= 60_000L -> 0xFFFF7043.toInt()  // red-orange
-                            remaining <= 300_000L -> 0xFFF59E0B.toInt() // amber
-                            else -> 0xFF6B7280.toInt()                  // normal gray
+                            remaining <= 600_000L -> 0xFFFF7043.toInt()   // red within 10min
+                            remaining <= 3_600_000L -> 0xFFF59E0B.toInt() // amber within 60min
+                            else -> 0xFF6B7280.toInt()                    // normal gray
                         })
                     } else {
                         view.text = "待计算"

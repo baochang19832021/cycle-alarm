@@ -33,18 +33,28 @@ class AlarmRingingActivity : AppCompatActivity() {
         val alarmId = intent.getStringExtra("alarm_id")
         val isTest = intent.getBooleanExtra(AlarmService.EXTRA_IS_TEST, false)
 
-        // Show medicine name prominently if set
+        val tvIcon = findViewById<TextView>(R.id.tvAlarmIcon)
         val tvLabel = findViewById<TextView>(R.id.tvAlarmLabel)
         val tvNote = findViewById<TextView>(R.id.tvAlarmNote)
 
+        // Title always shows the alarm name
+        tvLabel.text = label
+
+        // Supplementary info: medicine or rule
         if (medicineName.isNotEmpty()) {
-            tvLabel.text = "该吃药了"
-            tvNote.text = "💊 $medicineName"
+            tvIcon.text = "💊"
+            tvNote.text = medicineName
             tvNote.visibility = android.view.View.VISIBLE
             tvNote.setTextColor(0xFFE65100.toInt())
             tvNote.textSize = 26f
+        } else if (note.isNotEmpty()) {
+            tvIcon.text = "⏰"
+            tvNote.text = note
+            tvNote.visibility = android.view.View.VISIBLE
+            tvNote.setTextColor(0xFF888888.toInt())
+            tvNote.textSize = 16f
         } else {
-            tvLabel.text = if (note.isNotEmpty()) note else label
+            tvIcon.text = "⏰"
             tvNote.visibility = android.view.View.GONE
         }
 
@@ -76,11 +86,14 @@ class AlarmRingingActivity : AppCompatActivity() {
             }
         }
 
+        val prefs = getSharedPreferences("pixso_ui_alarm_state", Context.MODE_PRIVATE)
+        val snoozeEnabled = prefs.getBoolean("snoozeEnabled", true)
+        val snoozeMinutes = prefs.getInt("snoozeMinutes", 5)
+
         val btnSnooze = findViewById<Button>(R.id.btnSnooze)
-        btnSnooze.visibility = if (isTest) android.view.View.GONE else android.view.View.VISIBLE
-        // Read user-configured snooze interval (default 5 minutes)
-        val snoozeMs = getSharedPreferences("pixso_ui_alarm_state", Context.MODE_PRIVATE)
-            .getInt("snoozeMinutes", 5) * 60 * 1000L
+        btnSnooze.visibility = if (isTest || !snoozeEnabled) android.view.View.GONE else android.view.View.VISIBLE
+        val snoozeMs = snoozeMinutes * 60 * 1000L
+        btnSnooze.text = "${snoozeMinutes}分钟后再提醒"
 
         btnSnooze.setOnClickListener {
             alarmId?.let { id ->

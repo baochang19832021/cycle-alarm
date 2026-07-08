@@ -158,6 +158,11 @@ class AlarmService : Service() {
 
         // Request audio focus so we can duck music/video playback
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        // Push system alarm volume to max so user hears it
+        try {
+            val maxVol = audioManager?.getStreamMaxVolume(AudioManager.STREAM_ALARM) ?: 7
+            audioManager?.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0)
+        } catch (_: SecurityException) {}
         requestAudioFocus()
 
         startRingtone(ringtone)
@@ -226,8 +231,8 @@ class AlarmService : Service() {
                     )
                     setDataSource(this@AlarmService, uri)
                     isLooping = true
-                    // Start quiet — rising volume will handle the rest
-                    setVolume(0.2f, 0.2f)
+                    // Start at 40% — audible from the start, rising to full
+                    setVolume(0.4f, 0.4f)
                     setWakeMode(this@AlarmService, PowerManager.PARTIAL_WAKE_LOCK)
                     prepare()
                     start()
@@ -296,22 +301,22 @@ class AlarmService : Service() {
         }
     }
 
-    // ── Rising volume: 0.2 → 1.0 over ~30 seconds ──
+    // ── Rising volume: 0.4 → 1.0 over ~15 seconds ──
     private fun startRisingVolume() {
         volumeHandler = Handler(Looper.getMainLooper())
         volumeRunnable = object : Runnable {
             var step = 0
             override fun run() {
                 val player = mediaPlayer ?: return
-                val vol = (0.2f + step * 0.0533f).coerceAtMost(1f)
+                val vol = (0.4f + step * 0.06f).coerceAtMost(1f)
                 try { player.setVolume(vol, vol) } catch (_: Exception) {}
                 step++
-                if (step <= 15) {
-                    volumeHandler?.postDelayed(this, 2000L)
+                if (step <= 10) {
+                    volumeHandler?.postDelayed(this, 1500L)
                 }
             }
         }
-        volumeHandler?.postDelayed(volumeRunnable!!, 2000L)
+        volumeHandler?.postDelayed(volumeRunnable!!, 1500L)
     }
 
     // ── Auto-timeout: stop ringing after 10 minutes, keep notification ──
