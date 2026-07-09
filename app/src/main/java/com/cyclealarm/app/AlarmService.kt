@@ -116,6 +116,7 @@ class AlarmService : Service() {
         val medicineName = intent?.getStringExtra(EXTRA_MEDICINE_NAME) ?: ""
         val alarmId = intent?.getStringExtra(EXTRA_ALARM_ID)
         currentMedName = medicineName
+        val isMedicineAlarm = note.startsWith("吃药")
         val isTest = intent?.getBooleanExtra(EXTRA_IS_TEST, false) == true
         cleanup()
         currentAlarmId = alarmId
@@ -167,7 +168,17 @@ class AlarmService : Service() {
 
         startRingtone(ringtone)
         if (intent?.getBooleanExtra(EXTRA_VIBRATE, true) != false) startVibration()
-        if (medicineName.isNotEmpty()) speakMedicineName(medicineName)
+        // Voice announcement: try TTS first, fall back to built-in beep pattern
+        if (medicineName.isNotEmpty()) {
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                speakMedicineName(medicineName)
+            }, 3000L)
+        } else if (isMedicineAlarm) {
+            // Medicine alarm without TTS — use built-in distinct beep pattern
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                playMedicineFallbackBeep()
+            }, 3000L)
+        }
 
         // ── Rising volume: 20% → 100% over ~30 seconds ──
         startRisingVolume()
@@ -189,19 +200,82 @@ class AlarmService : Service() {
     }
 
     private fun speakMedicineName(name: String) {
+        // Lower ringtone volume so voice is clearly audible
+        try { mediaPlayer?.setVolume(0.1f, 0.1f) } catch (_: Exception) {}
+
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                tts?.language = java.util.Locale.CHINESE
+                // Use alarm stream so voice plays even when media volume is off
+                tts?.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                // Try Chinese first, fall back to bundled voice if not available
+                val langResult = tts?.setLanguage(java.util.Locale.CHINESE) ?: TextToSpeech.LANG_MISSING_DATA
+                if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    // Chinese TTS not available — use bundled voice file instead
+                    try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
+                    playMedicineFallbackBeep()
+                    return@TextToSpeech
+                }
                 val utteranceId = "med_${System.currentTimeMillis()}"
-                // Speak: "该吃 [药名] 了"
                 val text = "该吃${name}了"
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                        override fun onDone(utteranceId: String?) {
+                            try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
+                        }
+                        @Deprecated("Deprecated in Java")
+                        override fun onError(utteranceId: String?) {
+                            try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
+                        }
+                        override fun onStart(utteranceId: String?) {}
+                    })
                     tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
                 } else {
                     @Suppress("DEPRECATION")
                     tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null)
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
+                    }, 3000L)
                 }
+            } else {
+                // TTS init failed — use built-in beep fallback
+                try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
+                playMedicineFallbackBeep()
             }
+        }
+    }
+
+    private fun playMedicineFallbackBeep() {
+        // Play bundled voice audio "该吃药了" — real human voice, no TTS needed.
+        // Falls back to TTS for medicine name announcement if available.
+        try {
+            try { mediaPlayer?.setVolume(0.05f, 0.05f) } catch (_: Exception) {}
+            val voicePlayer = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                setDataSource(this@AlarmService, Uri.parse("android.resource://${packageName}/${R.raw.medicine_voice}"))
+                setOnCompletionListener {
+                    try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
+                    release()
+                }
+                setOnErrorListener { _, _, _ ->
+                    try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
+                    release(); true
+                }
+                prepare()
+                start()
+            }
+        } catch (_: Exception) {
+            try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
         }
     }
 

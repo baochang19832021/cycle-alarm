@@ -86,7 +86,7 @@ app/src/main/java/com/cyclealarm/app/
 
 1. **修改前**：读 `RULES_BEFORE_EDIT.md`，确认影响范围
 2. **修改中**：遵循 `PROJECT_RULES.md` 的设计规范
-3. **修改后**：按 `RULES_AFTER_EDIT.md` 自查，运行构建验证
+3. **修改后**：运行 `./pre-check.sh` 扫描反模式 → 按 `RULES_AFTER_EDIT.md` 自查 → 运行 `./safe_build.sh`（或 `./gradlew assembleDebug`）验证
 4. **阶段完成**：更新 `CURRENT_STATUS.md`
 
 ## 强制验证流程

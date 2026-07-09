@@ -37,6 +37,7 @@ import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.snackbar.Snackbar
 import com.cyclealarm.domain.UiAlarmSchedulePlanner
 import com.cyclealarm.domain.AlarmTimeCalculator
+import com.cyclealarm.domain.LegalWorkdayHelper
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.materialswitch.MaterialSwitch
 import java.text.SimpleDateFormat
@@ -98,6 +99,14 @@ class AlarmListActivity : AppCompatActivity() {
             0xFFFDF3FF.toInt(),
             R.drawable.ic_pixso_feature_lunar,
             "农历生日、纪念日、传统节日提醒"
+        ),
+        MEDICINE(
+            "吃药提醒",
+            "吃药",
+            0xFFE8658D.toInt(),
+            0xFFFFF0F5.toInt(),
+            R.drawable.ic_pixso_feature_medicine,
+            "定时语音播报，提醒按时吃药"
         )
     }
 
@@ -118,7 +127,8 @@ class AlarmListActivity : AppCompatActivity() {
         val minute: Int = 0,
         val dateMs: Long = 0L,
         val active: Boolean = true,
-        val config: Map<String, String> = emptyMap()
+        val config: Map<String, String> = emptyMap(),
+        val createdAt: Long = System.currentTimeMillis()
     )
 
     private val root by lazy { LinearLayout(this) }
@@ -126,6 +136,10 @@ class AlarmListActivity : AppCompatActivity() {
     private val statePrefs by lazy { getSharedPreferences(UI_STATE_PREFS, Context.MODE_PRIVATE) }
     private val navItems = mutableMapOf<Tab, LinearLayout>()
     private var currentTab = Tab.ALARMS
+
+    private var sortByTime: Boolean
+        get() = statePrefs.getBoolean("sort_by_time", true)
+        set(value) { statePrefs.edit().putBoolean("sort_by_time", value).apply() }
 
     private var editHour = 8
     private var editMinute = 0
@@ -151,8 +165,8 @@ class AlarmListActivity : AppCompatActivity() {
     private var deleteToolbarRef: View? = null
     private val countdownHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var countdownRunning = false
-    private var regularRepeatSummary = "每周一、三、五"
-    private val regularRepeatSelections = mutableSetOf("每周一", "每周三", "每周五")
+    private var regularRepeatSummary = "每周一至五"
+    private val regularRepeatSelections = mutableSetOf("每周一", "每周二", "每周三", "每周四", "每周五")
     private var specialRepeatValue = 40
     private var specialRepeatUnit = "天"
     private var specialRepeatHours = 2
@@ -162,6 +176,13 @@ class AlarmListActivity : AppCompatActivity() {
     private var lunarRepeatSummary = "每年"
     private var lunarAdvanceDays = 3
     private var lunarAdvanceEnabled = false
+    private var medicineDrugName = ""
+    private var medicineDosage = ""
+    private var medicineVoiceEnabled = true
+    private var ttsCheckDone = false
+    private var ttsAvailable = false
+    private val medicineTimes = mutableListOf("08:00", "20:00")
+    private val medicineTimeLabels = mutableListOf("早饭後", "晚饭後")
     private var editTitle: String? = null
     private var editDateMs: Long? = null
     private var editMedicineName: String? = null
@@ -292,10 +313,10 @@ class AlarmListActivity : AppCompatActivity() {
             item.addView(ImageView(this).apply {
                 setImageResource(pair.first)
                 setColorFilter(0xFF9CA3AF.toInt())
-            }, LinearLayout.LayoutParams(dp(22), dp(22)))
+            }, LinearLayout.LayoutParams(dp(24), dp(24)))
             item.addView(TextView(this).apply {
                 text = pair.second
-                textSize = 13f
+                textSize = 13.5f
                 typeface = Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
                 includeFontPadding = false
@@ -392,11 +413,28 @@ class AlarmListActivity : AppCompatActivity() {
                 gravity = Gravity.TOP
             })
         }
-        val demos = alarmInstances.map { inst ->
-            DemoAlarm(
-                title = inst.title,
+        // Sort: active alarms by next ring time, inactive at bottom
+        val ordered = alarmInstances.sortedWith(compareBy<AlarmInstance> { !it.active }
+            .thenBy { nextRingTimeMs(it) ?: Long.MAX_VALUE })
+        val cards = ordered.map { inst ->
+            val displayTitle = if (inst.type == FeatureType.MEDICINE) {
+                val drug = inst.config["drugName"] ?: ""
+                val dosage = inst.config["dosage"] ?: ""
+                when {
+                    drug.isNotEmpty() && dosage.isNotEmpty() -> "💊 $drug · $dosage"
+                    drug.isNotEmpty() -> "💊 $drug"
+                    else -> inst.title
+                }
+            } else inst.title
+            val displayTime = if (inst.type == FeatureType.MEDICINE) {
+                val timesRaw = inst.config["medTimes"] ?: ""
+                val times = timesRaw.split("|").filter { it.isNotBlank() }
+                if (times.size > 1) times.joinToString("  ") else String.format("%02d:%02d", inst.hour, inst.minute)
+            } else String.format("%02d:%02d", inst.hour, inst.minute)
+            inst.id to DemoAlarm(
+                title = displayTitle,
                 type = inst.type,
-                time = String.format("%02d:%02d", inst.hour, inst.minute),
+                time = displayTime,
                 next = alarmInstanceNextText(inst),
                 rule = alarmInstanceRuleText(inst),
                 active = inst.active
@@ -439,7 +477,7 @@ class AlarmListActivity : AppCompatActivity() {
                 bottomMargin = dp(24)
             })
         }
-        if (demos.isEmpty()) {
+        if (cards.isEmpty()) {
             column.addView(TextView(this).apply {
                 text = "暂无闹钟"
                 textSize = 15f
@@ -448,8 +486,8 @@ class AlarmListActivity : AppCompatActivity() {
                 setPadding(0, dp(40), 0, dp(8))
             })
         } else {
-            demos.forEachIndexed { idx, item ->
-                column.addView(alarmCard(alarmInstances[idx].id, item))
+            cards.forEach { (id, item) ->
+                column.addView(alarmCard(id, item))
             }
         }
     }
@@ -460,7 +498,7 @@ class AlarmListActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
                 leftMargin = dp(8)
                 rightMargin = dp(8)
-                bottomMargin = dp(11)
+                bottomMargin = dp(14)
             }
             setPadding(dp(15), dp(12), dp(15), dp(12))
             isClickable = true
@@ -540,22 +578,23 @@ class AlarmListActivity : AppCompatActivity() {
             addView(topLayer)
             addView(TextView(context).apply {
                 text = item.time
-                textSize = 30f
+                textSize = if (item.type == FeatureType.MEDICINE && item.time.length > 5) 24f else 30f
+                typeface = Typeface.DEFAULT_BOLD
                 setTextColor(if (item.active) 0xFF111827.toInt() else 0xFF9CA3AF.toInt())
                 includeFontPadding = false
                 setPadding(0, dp(7), 0, 0)
             })
             val nextText = TextView(context).apply {
                 text = item.next
-                textSize = 13f
-                setTextColor(if (item.active) 0xFF6B7280.toInt() else 0xFF9CA3AF.toInt())
+                textSize = 13.5f
+                setTextColor(if (item.active) 0xFF4B5563.toInt() else 0xFF9CA3AF.toInt())
             }
             countdownViews[instanceId] = nextText
             addView(nextText)
             addView(TextView(context).apply {
                 text = item.rule
-                textSize = 12f
-                setTextColor(0xFF9CA3AF.toInt())
+                textSize = 12.5f
+                setTextColor(0xFF8EA0B8.toInt())
                 setPadding(0, dp(3), 0, 0)
             })
         }
@@ -605,13 +644,13 @@ class AlarmListActivity : AppCompatActivity() {
                 layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
                 addView(TextView(context).apply {
                     text = feature.title
-                    textSize = 16f
+                    textSize = 18f
                     typeface = Typeface.DEFAULT_BOLD
                     setTextColor(0xFF111827.toInt())
                 })
                 addView(TextView(context).apply {
                     text = feature.desc
-                    textSize = 12f
+                    textSize = 13f
                     setTextColor(0xFF8EA0B8.toInt())
                     setPadding(0, dp(6), 0, 0)
                 })
@@ -638,6 +677,12 @@ class AlarmListActivity : AppCompatActivity() {
             editHour = instance.hour
             editMinute = instance.minute
             loadConfigFromInstance(instance)
+            // For medicine, sync editHour/Minute from first time slot
+            if (feature == FeatureType.MEDICINE && medicineTimes.isNotEmpty()) {
+                val parts = medicineTimes[0].split(":")
+                editHour = parts.getOrNull(0)?.toIntOrNull() ?: editHour
+                editMinute = parts.getOrNull(1)?.toIntOrNull() ?: editMinute
+            }
         }
         selectNavOnly(Tab.FUNCTIONS)
         val rootEdit = LinearLayout(this).apply {
@@ -656,10 +701,19 @@ class AlarmListActivity : AppCompatActivity() {
         }) {
             // Save: serialize edit state back into instance
             val updatedConfig = buildConfigForType(feature)
+            val saveTitle = if (feature == FeatureType.MEDICINE && instanceTitle(instanceId) == null) {
+                medicineDisplayTitle()
+            } else {
+                instanceTitle(instanceId) ?: instance.title
+            }
+            val (saveHour, saveMinute) = if (feature == FeatureType.MEDICINE) {
+                val firstTime = medicineTimes.firstOrNull()?.split(":") ?: listOf("8", "00")
+                (firstTime.getOrNull(0)?.toIntOrNull() ?: 8) to (firstTime.getOrNull(1)?.toIntOrNull() ?: 0)
+            } else editHour to editMinute
             val updatedInstance = instance.copy(
-                title = instanceTitle(instanceId) ?: instance.title,
-                hour = editHour,
-                minute = editMinute,
+                title = saveTitle,
+                hour = saveHour,
+                minute = saveMinute,
                 dateMs = instanceDateMs(instanceId),
                 active = true,
                 config = updatedConfig
@@ -685,11 +739,17 @@ class AlarmListActivity : AppCompatActivity() {
             setPadding(dp(20), dp(8), dp(20), dp(24))
         }
         if (feature == FeatureType.SHIFT) {
-            val instTitle = instance.title
-            column.addView(settingsRow("闹钟名称", instTitle, true) { showTitleDialog(instanceId) })
-            column.addView(settingsRow("开始日期", alarmInstanceDateText(instance), true) { showDateDialog(instanceId, "开始日期") })
+            val instTitle = instanceTitle(instanceId) ?: instance.title
+            val titleRow = settingsRow("闹钟名称", instTitle, true) { showTitleDialog(instanceId) }
+            titleRow.tag = "title_$instanceId"
+            column.addView(titleRow)
+            val dateRow1 = settingsRow("开始日期", alarmInstanceDateText(instance), true) { showDateDialog(instanceId, "开始日期") }
+            dateRow1.tag = "date_$instanceId"
+            column.addView(dateRow1)
             column.addView(settingsRow("周期", "每轮 $shiftCycleDays 天", true) { showShiftCycleDialog() })
-            column.addView(ringtoneSettingsRow(instanceId))
+            val ringRow1 = ringtoneSettingsRow(instanceId)
+            ringRow1.tag = "ringtone_$instanceId"
+            column.addView(ringRow1)
             column.addView(vibrationButtonRow(instanceId))
             column.addView(sectionTitle("排班设置"))
             column.addView(TextView(this).apply {
@@ -701,30 +761,75 @@ class AlarmListActivity : AppCompatActivity() {
             })
             column.addView(shiftDayGrid())
         } else {
-            column.addView(timeWheels(editHour, editMinute) { h, m ->
-                editHour = h; editMinute = m
-            })
-            val instTitle = instance.title
-            column.addView(settingsRow("闹钟名称", instTitle, true) { showTitleDialog(instanceId) })
+            if (feature != FeatureType.MEDICINE) {
+                column.addView(timeWheels(editHour, editMinute) { h, m ->
+                    editHour = h; editMinute = m
+                })
+            }
+            if (feature != FeatureType.MEDICINE) {
+                val instTitle = instanceTitle(instanceId) ?: instance.title
+                val titleRow = settingsRow("闹钟名称", instTitle, true) { showTitleDialog(instanceId) }
+                titleRow.tag = "title_$instanceId"
+                column.addView(titleRow)
+            }
             when (feature) {
                 FeatureType.REGULAR -> {
-                    column.addView(settingsRow("响铃日期", alarmInstanceDateText(instance), true) { showDateDialog(instanceId, "响铃日期") })
-                    column.addView(settingsRow("重复", regularRepeatSummary, true) { showRegularRepeatDialog(instanceId) })
+                    val dateRowReg = settingsRow("响铃日期", alarmInstanceDateText(instance), true) { showDateDialog(instanceId, "响铃日期") }
+                    dateRowReg.tag = "date_$instanceId"
+                    column.addView(dateRowReg)
+                    val repeatRowReg = settingsRow("重复", regularRepeatSummary, true) { showRegularRepeatDialog(instanceId) }
+                    repeatRowReg.tag = "repeat_$instanceId"
+                    column.addView(repeatRowReg)
                 }
                 FeatureType.SPECIAL -> {
-                    column.addView(settingsRow("开始日期", alarmInstanceDateText(instance), true) { showDateDialog(instanceId, "开始日期") })
+                    val dateRowSpec = settingsRow("开始日期", alarmInstanceDateText(instance), true) { showDateDialog(instanceId, "开始日期") }
+                    dateRowSpec.tag = "date_$instanceId"
+                    column.addView(dateRowSpec)
                     column.addView(settingsRow("重复周期", specialRepeatText(), true) { showSpecialRepeatDialog(reset = true) })
                 }
                 FeatureType.LUNAR -> {
                     column.addView(settingsRow("农历日期", lunarDateSummary, true) { showLunarDateDialog(feature.accent) })
-                    column.addView(settingsRow("重复", lunarRepeatSummary, true) { showLunarRepeatDialog(instanceId) })
+                    val repeatRowLunar = settingsRow("重复", lunarRepeatSummary, true) { showLunarRepeatDialog(instanceId) }
+                    repeatRowLunar.tag = "repeat_$instanceId"
+                    column.addView(repeatRowLunar)
                     column.addView(lunarAdvanceRow(instanceId))
+                }
+                FeatureType.MEDICINE -> {
+                    column.addView(settingsRow("药品名称", medicineDrugName.ifEmpty { "未设置" }, true) {
+                        showMedicineDetailDialog("药品名称", medicineDrugName, "如：降压药、阿莫西林") { medicineDrugName = it; saveUiState() }
+                    })
+                    column.addView(settingsRow("用法用量", medicineDosage.ifEmpty { "未设置" }, true) {
+                        showMedicineDetailDialog("用法用量", medicineDosage, "如：每次1片、每日3次") { medicineDosage = it; saveUiState() }
+                    })
+                    // Quick presets
+                    column.addView(medicinePresetRow(feature.accent))
+                    // Time slots
+                    column.addView(sectionTitle("服药时间"))
+                    medicineTimes.forEachIndexed { idx, time ->
+                        column.addView(medicineTimeSlotRow(idx, time, medicineTimeLabels.getOrElse(idx) { "" }, instanceId))
+                    }
+                    column.addView(addMedicineTimeButton(instanceId))
+                    column.addView(medicineVoiceRow(instanceId))
                 }
                 FeatureType.SHIFT -> Unit
             }
-            column.addView(ringtoneSettingsRow(instanceId))
+            val ringRow2 = ringtoneSettingsRow(instanceId)
+            ringRow2.tag = "ringtone_$instanceId"
+            column.addView(ringRow2)
             column.addView(vibrationButtonRow(instanceId))
-            column.addView(settingsRow("响铃时长", "${ringDurationMinutes}分钟", true) { showNumberOptionDialog("响铃时长", ringDurationMinutes, 1..10, "分钟", feature.accent) { ringDurationMinutes = it; renderEdit(instanceId) } })
+            val ringDurationRow = settingsRow("响铃时长", "${ringDurationMinutes}分钟", true) {
+                showNumberOptionDialog("响铃时长", ringDurationMinutes, 1..10, "分钟", feature.accent) {
+                    ringDurationMinutes = it
+                    saveUiState()
+                    // Update row in-place instead of rebuilding the whole page
+                    val contentView = findViewById<View>(android.R.id.content)
+                    (contentView?.findViewWithTag<View>("ring_duration_$instanceId") as? LinearLayout)?.let { row ->
+                        (row.getChildAt(1) as? TextView)?.text = "${ringDurationMinutes}分钟"
+                    }
+                }
+            }
+            ringDurationRow.tag = "ring_duration_$instanceId"
+            column.addView(ringDurationRow)
             column.addView(snoozeSettingsRow(instanceId))
         }
         scroll.addView(column)
@@ -1334,7 +1439,11 @@ class AlarmListActivity : AppCompatActivity() {
             }
             saveUiState()
             dialog.dismiss()
-            renderEdit(instanceId)
+            // Update repeat row in-place
+            val contentView = findViewById<View>(android.R.id.content)
+            (contentView?.findViewWithTag<View>("repeat_$instanceId") as? LinearLayout)?.let { row ->
+                (row.getChildAt(1) as? TextView)?.text = regularRepeatSummary
+            }
         }
         fun rebuildContent(): LinearLayout {
             val column = bottomSheetBase("重复", feature.accent, onCancel = { dialog.dismiss() }) {
@@ -1399,7 +1508,11 @@ class AlarmListActivity : AppCompatActivity() {
         showOptionDialog("农历重复", listOf("每年", "只提醒一次"), lunarRepeatSummary, inst.type.accent) {
             lunarRepeatSummary = it
             saveUiState()
-            renderEdit(instanceId)
+            // Update repeat row in-place
+            val contentView = findViewById<View>(android.R.id.content)
+            (contentView?.findViewWithTag<View>("repeat_$instanceId") as? LinearLayout)?.let { row ->
+                (row.getChildAt(1) as? TextView)?.text = lunarRepeatSummary
+            }
         }
     }
 
@@ -1421,7 +1534,15 @@ class AlarmListActivity : AppCompatActivity() {
                 if (next.isNotEmpty()) {
                     editTitle = next
                 }
-                renderEdit(instanceId)
+                // Update title row in-place instead of rebuilding the whole page
+                val contentView = findViewById<View>(android.R.id.content)
+                val row = contentView?.findViewWithTag<View>("title_$instanceId")
+                if (row is LinearLayout && row.childCount > 1) {
+                    val valueTv = row.getChildAt(1)
+                    if (valueTv is TextView) {
+                        valueTv.text = instanceTitle(instanceId) ?: inst.title
+                    }
+                }
             }
             .show()
     }
@@ -1445,7 +1566,13 @@ class AlarmListActivity : AppCompatActivity() {
                     set(Calendar.DAY_OF_MONTH, picker.dayOfMonth)
                 }.timeInMillis
                 editDateMs = newDateMs
-                renderEdit(instanceId)
+                saveUiState()
+                // Update date row in-place
+                val contentView = findViewById<View>(android.R.id.content)
+                val updatedText = alarmInstanceDateText(inst)
+                (contentView?.findViewWithTag<View>("date_$instanceId") as? LinearLayout)?.let { row ->
+                    (row.getChildAt(1) as? TextView)?.text = updatedText
+                }
             }
             .show()
     }
@@ -1461,7 +1588,12 @@ class AlarmListActivity : AppCompatActivity() {
             }) {
                 stopRingtonePreview()
                 dialog.dismiss()
-                renderEdit(instanceId)
+                // Update ringtone row in-place instead of rebuilding the whole page
+                val contentView = findViewById<View>(android.R.id.content)
+                (contentView?.findViewWithTag<View>("ringtone_$instanceId") as? LinearLayout)?.let { row ->
+                    if (row.childCount > 1) (row.getChildAt(1) as? TextView)?.text = ringtoneSummary
+                    if (row.childCount > 2) (row.getChildAt(2) as? TextView)?.text = if (isPlayingPreview) "■" else "▷"
+                }
             }
             column.addView(settingsRow("当前铃声", ringtoneSummary, false))
             column.addView(settingsRow("选择系统铃声", "", true) {
@@ -1692,7 +1824,10 @@ class AlarmListActivity : AppCompatActivity() {
     }
 
     private fun renderCalendar() {
-        val column = baseScroll("", rightText = "今天") {}
+        val column = baseScroll("日历", rightText = "今天") {
+            selectedCalendarDay = Calendar.getInstance()
+            renderCalendar()
+        }
         column.removeAllViews()
         val now = selectedCalendarDay.clone() as Calendar
         val shiftStartMs = alarmInstances.firstOrNull { it.type == FeatureType.SHIFT }?.dateMs ?: System.currentTimeMillis()
@@ -1913,11 +2048,11 @@ class AlarmListActivity : AppCompatActivity() {
 
     private fun typeBadge(type: FeatureType): TextView = TextView(this).apply {
         text = type.tag
-        textSize = 15f
+        textSize = 12f
         typeface = Typeface.DEFAULT_BOLD
         setTextColor(type.accent)
-        background = rounded(type.tint, dp(6))
-        setPadding(dp(8), dp(4), dp(8), dp(4))
+        background = rounded(type.tint, dp(5))
+        setPadding(dp(6), dp(3), dp(6), dp(3))
         layoutParams = LinearLayout.LayoutParams(-2, -2).apply {
             rightMargin = dp(6)
         }
@@ -1971,7 +2106,7 @@ class AlarmListActivity : AppCompatActivity() {
                 }
             })
             setOnClickListener {
-                val switch = getChildAt(1) as MaterialSwitch
+                val switch = getChildAt(1) as? MaterialSwitch ?: return@setOnClickListener
                 switch.isChecked = !switch.isChecked
             }
         }
@@ -2152,7 +2287,8 @@ class AlarmListActivity : AppCompatActivity() {
                 isSoundEffectsEnabled = false
                 setOnClickListener {
                     toggleRingtonePreview()
-                    renderEdit(instanceId)
+                    // Update button text in-place (no need to rebuild whole page)
+                    this@apply.text = if (isPlayingPreview) "■" else "▷"
                 }
             }, LinearLayout.LayoutParams(dp(30), dp(36)))
             addView(TextView(context).apply {
@@ -2177,6 +2313,7 @@ class AlarmListActivity : AppCompatActivity() {
             FeatureType.SPECIAL -> "特殊周期提醒"
             FeatureType.SHIFT -> "轮班闹钟"
             FeatureType.LUNAR -> "农历生日提醒"
+            FeatureType.MEDICINE -> "吃药提醒"
         }
 
     // alarmTitle removed — use instance.title directly
@@ -2202,9 +2339,213 @@ class AlarmListActivity : AppCompatActivity() {
             .setPositiveButton("确定") { _, _ ->
                 val next = input.text.toString().trim()
                 editMedicineName = next
-                renderEdit(instanceId)
             }
             .show()
+    }
+
+    private fun showMedicineDetailDialog(title: String, current: String, placeholder: String, onDone: (String) -> Unit) {
+        val input = EditText(this).apply {
+            setText(current)
+            hint = placeholder
+            inputType = InputType.TYPE_CLASS_TEXT
+            setSingleLine(true)
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(input)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("完成") { _, _ ->
+                val next = input.text?.toString()?.trim().orEmpty()
+                onDone(next)
+            }
+            .show()
+    }
+
+    private fun medicinePresetRow(accent: Int): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(16), dp(10), dp(16), dp(6))
+        }
+        row.addView(labelTextView("快捷设置"), LinearLayout.LayoutParams(0, -2, 1f))
+        listOf(
+            "每日一次" to { applyMedicinePreset(1) },
+            "每日两次" to { applyMedicinePreset(2) },
+            "每日三次" to { applyMedicinePreset(3) }
+        ).forEach { (label, action) ->
+            row.addView(pill(label, medicineTimes.size == label.last().toString().toIntOrNull(), accent).apply {
+                setOnClickListener { action(); renderEdit(currentEditingInstanceId ?: return@setOnClickListener) }
+            })
+        }
+        return row
+    }
+
+    private fun applyMedicinePreset(count: Int) {
+        medicineTimes.clear()
+        medicineTimeLabels.clear()
+        when (count) {
+            1 -> { medicineTimes.add("08:00"); medicineTimeLabels.add("早饭後") }
+            2 -> { medicineTimes.addAll(listOf("08:00", "20:00")); medicineTimeLabels.addAll(listOf("早饭後", "晚饭後")) }
+            3 -> { medicineTimes.addAll(listOf("08:00", "12:30", "19:00")); medicineTimeLabels.addAll(listOf("早饭後", "午饭后", "晚饭後")) }
+        }
+        saveUiState()
+    }
+
+    private fun medicineTimeSlotRow(idx: Int, time: String, label: String, instanceId: String): View {
+        val ctx = this
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(20), dp(8), dp(16), dp(8))
+            background = rounded(0xFFFFFFFF.toInt(), dp(0))
+            // Time display
+            addView(TextView(ctx).apply {
+                text = "🕐 $time"
+                textSize = 16f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFF111827.toInt())
+                setPadding(0, 0, dp(8), 0)
+                isClickable = true; isFocusable = true
+                setOnClickListener { showMedicineTimePicker(idx, instanceId) }
+            })
+            // Label
+            addView(TextView(ctx).apply {
+                text = label
+                textSize = 13f
+                setTextColor(0xFF8EA0B8.toInt())
+                layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                isClickable = true; isFocusable = true
+                setOnClickListener { showMedicineLabelDialog(idx, instanceId) }
+            })
+            // Delete (only if more than 1)
+            if (medicineTimes.size > 1) {
+                addView(TextView(ctx).apply {
+                    text = "✕"
+                    textSize = 16f
+                    setTextColor(0xFFCBD5E1.toInt())
+                    setPadding(dp(10), dp(4), dp(0), dp(4))
+                    setOnClickListener {
+                        medicineTimes.removeAt(idx)
+                        medicineTimeLabels.removeAt(idx.coerceAtMost(medicineTimeLabels.size - 1))
+                        saveUiState()
+                        renderEdit(instanceId)
+                    }
+                })
+            }
+        }
+    }
+
+    private fun addMedicineTimeButton(instanceId: String): View {
+        return TextView(this).apply {
+            text = "+ 添加服药时间"
+            textSize = 14f
+            setTextColor(0xFF4A6CF7.toInt())
+            gravity = Gravity.CENTER
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setOnClickListener {
+                medicineTimes.add("12:00")
+                medicineTimeLabels.add("")
+                saveUiState()
+                renderEdit(instanceId)
+            }
+        }
+    }
+
+    private fun showMedicineTimePicker(idx: Int, instanceId: String) {
+        val parts = medicineTimes[idx].split(":")
+        var h = parts.getOrNull(0)?.toIntOrNull() ?: 8
+        var m = parts.getOrNull(1)?.toIntOrNull() ?: 0
+        val dialog = BottomSheetDialog(this)
+        val column = bottomSheetBase("服药时间", 0xFF4A6CF7.toInt(), onCancel = { dialog.dismiss() }) {
+            medicineTimes[idx] = String.format("%02d:%02d", h, m)
+            saveUiState()
+            dialog.dismiss()
+            renderEdit(instanceId)
+        }
+        column.addView(timeWheels(h, m) { nh, nm -> h = nh; m = nm })
+        dialog.setContentView(column)
+        dialog.show()
+    }
+
+    private fun showMedicineLabelDialog(idx: Int, instanceId: String) {
+        val current = medicineTimeLabels.getOrElse(idx) { "" }
+        showMedicineDetailDialog("时段标签", current, "如：早饭後、睡前") { label ->
+            if (idx < medicineTimeLabels.size) medicineTimeLabels[idx] = label
+            else medicineTimeLabels.add(label)
+            saveUiState()
+            renderEdit(instanceId)
+        }
+    }
+
+    private fun checkTtsAvailability() {
+        if (ttsCheckDone) return
+        var checker: android.speech.tts.TextToSpeech? = null
+        checker = android.speech.tts.TextToSpeech(this) { status ->
+            if (status == android.speech.tts.TextToSpeech.SUCCESS) {
+                checker?.setAudioAttributes(
+                    android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_ALARM)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                val langResult = checker?.setLanguage(java.util.Locale.CHINESE) ?: android.speech.tts.TextToSpeech.LANG_MISSING_DATA
+                ttsAvailable = langResult != android.speech.tts.TextToSpeech.LANG_MISSING_DATA && langResult != android.speech.tts.TextToSpeech.LANG_NOT_SUPPORTED
+            }
+            ttsCheckDone = true
+        }
+    }
+
+    private fun openTtsSettings() {
+        try {
+            startActivity(Intent("com.android.settings.TTS_SETTINGS"))
+        } catch (_: Exception) {
+            try {
+                startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            } catch (_: Exception) {
+                Toast.makeText(this, "请手动打开 设置→无障碍→文字转语音", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun medicineVoiceRow(instanceId: String): View {
+        val ctx = this
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+            background = rounded(0xFFFFFFFF.toInt(), dp(0))
+        }
+        fun rebuildRow() {
+            row.removeAllViews()
+            row.addView(labelTextView("语音播报"), LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(TextView(ctx).apply {
+                text = if (medicineVoiceEnabled) "响铃时播报" else "仅响铃"
+                textSize = 13f
+                setTextColor(0xFF8EA0B8.toInt())
+                gravity = Gravity.RIGHT
+                setPadding(0, 0, dp(12), 0)
+            })
+            row.addView(MaterialSwitch(ctx).apply {
+                isChecked = medicineVoiceEnabled
+                setOnCheckedChangeListener { _, checked ->
+                    medicineVoiceEnabled = checked
+                    saveUiState()
+                    rebuildRow()
+                }
+            })
+        }
+        rebuildRow()
+        return row
+    }
+
+    private fun medicineDisplayTitle(): String {
+        val drug = medicineDrugName
+        val dosage = medicineDosage
+        return when {
+            drug.isNotEmpty() && dosage.isNotEmpty() -> "💊 $drug · $dosage"
+            drug.isNotEmpty() -> "💊 $drug"
+            else -> "吃药提醒"
+        }
     }
 
     private fun timeText(): String = String.format("%02d:%02d", editHour, editMinute)
@@ -2275,7 +2616,13 @@ class AlarmListActivity : AppCompatActivity() {
             FeatureType.REGULAR -> {
                 val raw = instance.config["repeatSelections"]?.takeIf { it.isNotBlank() }
                     ?: regularRepeatSelections.joinToString("|")
-                val selections = raw.split("|").filter { it.isNotBlank() }.toSet()
+                val selections = raw.split("|").filter { it.isNotBlank() }.toMutableSet()
+                // Special rules (每天/每月/每年) are stored in repeatSummary but clear repeatSelections.
+                // Must merge them back into selections so planRegular can generate actual alarm plans.
+                val summary = instance.config["repeatSummary"] ?: regularRepeatSummary
+                if (summary in setOf("每天", "每月", "每年", "法定工作日")) {
+                    selections.add(summary)
+                }
                 UiAlarmSchedulePlanner.planRegular(
                     enabled = true, hour = hour, minute = minute, label = label,
                     ringtoneUri = selectedRingtoneUri, vibrate = vibrationEnabled,
@@ -2349,6 +2696,38 @@ class AlarmListActivity : AppCompatActivity() {
                     )
                 }
             }
+            FeatureType.MEDICINE -> {
+                val voiceOn = instance.config["voiceEnabled"]?.toBooleanStrictOrNull() ?: medicineVoiceEnabled
+                val medName = if (voiceOn) (instance.config["drugName"] ?: medicineDrugName) else ""
+                val timesRaw = instance.config["medTimes"] ?: medicineTimes.joinToString("|")
+                val labelsRaw = instance.config["medLabels"] ?: medicineTimeLabels.joinToString("|")
+                val times = timesRaw.split("|").filter { it.isNotBlank() }
+                val labels = labelsRaw.split("|").filter { it.isNotBlank() }
+                // Anchor to yesterday midnight so calculateNextTime(intervalDays=1) starts from today
+                val anchorMs = Calendar.getInstance().apply {
+                    add(Calendar.DAY_OF_YEAR, -1)
+                    set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
+                    set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+                }.timeInMillis
+                times.mapIndexed { idx, timeStr ->
+                    val parts = timeStr.split(":")
+                    val h = parts.getOrNull(0)?.toIntOrNull() ?: instance.hour
+                    val m = parts.getOrNull(1)?.toIntOrNull() ?: instance.minute
+                    val timeLabel = labels.getOrElse(idx) { "" }
+                    val note = if (timeLabel.isNotEmpty()) "吃药 · $timeLabel" else "吃药提醒"
+                    UiAlarmSchedulePlanner.SchedulePlan(
+                        id = "alarm_ui_medicine_$idx",
+                        hour = h, minute = m,
+                        intervalDays = 1,
+                        startDateMs = anchorMs,
+                        label = label,
+                        note = note,
+                        ringtoneUri = selectedRingtoneUri,
+                        vibrate = vibrationEnabled,
+                        medicineName = medName
+                    )
+                }
+            }
         }
         // Make planner IDs instance-unique
         return rawPlans.map { plan ->
@@ -2372,9 +2751,10 @@ class AlarmListActivity : AppCompatActivity() {
             setBackgroundColor(0xFFFFFFFF.toInt())
             addView(TextView(context).apply {
                 text = "取消"
-                textSize = 14f
+                textSize = 16f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
                 setTextColor(0xFF8EA0B8.toInt())
-                setPadding(dp(8), dp(8), dp(16), dp(8))
+                setPadding(dp(12), dp(8), dp(16), dp(8))
                 setOnClickListener {
                     isAlarmDeleteMode = false
                     checkedInstanceIds.clear()
@@ -2385,7 +2765,7 @@ class AlarmListActivity : AppCompatActivity() {
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                setPadding(dp(12), dp(4), dp(12), dp(4))
+                setPadding(dp(12), dp(4), dp(20), dp(4))
                 isClickable = true
                 isFocusable = true
                 isHapticFeedbackEnabled = false
@@ -2398,7 +2778,8 @@ class AlarmListActivity : AppCompatActivity() {
                 })
                 addView(TextView(context).apply {
                     text = "删除"
-                    textSize = 11f
+                    textSize = 14f
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
                     gravity = Gravity.CENTER
                     setTextColor(accentColor)
                 })
@@ -2544,6 +2925,13 @@ class AlarmListActivity : AppCompatActivity() {
                     config["lunarDate"] = statePrefs.getString("lunarDateSummary", "五月十八") ?: "五月十八"
                     config["lunarRepeat"] = statePrefs.getString("lunarRepeatSummary", "每年") ?: "每年"
                 }
+                FeatureType.MEDICINE -> {
+                    config["drugName"] = statePrefs.getString("medicineDrugName", medicineDrugName) ?: medicineDrugName
+                    config["dosage"] = statePrefs.getString("medicineDosage", medicineDosage) ?: medicineDosage
+                    config["voiceEnabled"] = statePrefs.getBoolean("medicineVoiceEnabled", medicineVoiceEnabled).toString()
+                    config["medTimes"] = statePrefs.getString("medTimes", medicineTimes.joinToString("|")) ?: medicineTimes.joinToString("|")
+                    config["medLabels"] = statePrefs.getString("medLabels", medicineTimeLabels.joinToString("|")) ?: medicineTimeLabels.joinToString("|")
+                }
             }
 
             alarmInstances.add(AlarmInstance(
@@ -2586,6 +2974,13 @@ class AlarmListActivity : AppCompatActivity() {
             "lunarRepeat" to lunarRepeatSummary,
             "lunarAdvanceDays" to lunarAdvanceDays.toString(),
             "lunarAdvanceEnabled" to lunarAdvanceEnabled.toString()
+        )
+        FeatureType.MEDICINE -> mapOf(
+            "drugName" to medicineDrugName,
+            "dosage" to medicineDosage,
+            "voiceEnabled" to medicineVoiceEnabled.toString(),
+            "medTimes" to medicineTimes.joinToString("|"),
+            "medLabels" to medicineTimeLabels.joinToString("|")
         )
     }
 
@@ -2632,6 +3027,17 @@ class AlarmListActivity : AppCompatActivity() {
                 lunarAdvanceDays = c["lunarAdvanceDays"]?.toIntOrNull() ?: lunarAdvanceDays
                 lunarAdvanceEnabled = c["lunarAdvanceEnabled"]?.toBooleanStrictOrNull() ?: lunarAdvanceEnabled
             }
+            FeatureType.MEDICINE -> {
+                medicineDrugName = c["drugName"] ?: medicineDrugName
+                medicineDosage = c["dosage"] ?: medicineDosage
+                medicineVoiceEnabled = c["voiceEnabled"]?.toBooleanStrictOrNull() ?: medicineVoiceEnabled
+                c["medTimes"]?.takeIf { it.isNotBlank() }?.let {
+                    medicineTimes.clear(); medicineTimes.addAll(it.split("|").filter { s -> s.isNotBlank() })
+                }
+                c["medLabels"]?.takeIf { it.isNotBlank() }?.let {
+                    medicineTimeLabels.clear(); medicineTimeLabels.addAll(it.split("|").filter { s -> s.isNotBlank() })
+                }
+            }
         }
     }
 
@@ -2677,6 +3083,16 @@ class AlarmListActivity : AppCompatActivity() {
                     "$date · $repeat"
                 }
             }
+            FeatureType.MEDICINE -> {
+                val voiceEnabled = instance.config["voiceEnabled"]?.toBooleanStrictOrNull() ?: medicineVoiceEnabled
+                val timesRaw = instance.config["medTimes"] ?: medicineTimes.joinToString("|")
+                val count = timesRaw.split("|").filter { it.isNotBlank() }.size
+                val timeDesc = when {
+                    count <= 1 -> "每日 1 次"
+                    else -> "每日 $count 次"
+                }
+                if (voiceEnabled) "$timeDesc · 语音播报" else timeDesc
+            }
         }
     }
 
@@ -2721,6 +3137,9 @@ class AlarmListActivity : AppCompatActivity() {
         val now = System.currentTimeMillis()
         return plans.minOfOrNull { plan ->
             when {
+                plan.note == "法定工作日" -> LegalWorkdayHelper.nextWorkdayAtOrAfter(
+                    now, plan.hour, plan.minute
+                )
                 plan.repeatMonths > 0 -> AlarmTimeCalculator.calculateNextMonthInterval(
                     plan.startDateMs, plan.repeatMonths, now
                 )
@@ -2845,6 +3264,15 @@ class AlarmListActivity : AppCompatActivity() {
         lunarRepeatSummary = statePrefs.getString("lunarRepeatSummary", lunarRepeatSummary) ?: lunarRepeatSummary
         lunarAdvanceDays = statePrefs.getInt("lunarAdvanceDays", lunarAdvanceDays)
         lunarAdvanceEnabled = statePrefs.getBoolean("lunarAdvanceEnabled", lunarAdvanceEnabled)
+        medicineDrugName = statePrefs.getString("medicineDrugName", medicineDrugName) ?: medicineDrugName
+        medicineDosage = statePrefs.getString("medicineDosage", medicineDosage) ?: medicineDosage
+        medicineVoiceEnabled = statePrefs.getBoolean("medicineVoiceEnabled", medicineVoiceEnabled)
+        statePrefs.getString("medTimes", null)?.takeIf { it.isNotBlank() }?.let {
+            medicineTimes.clear(); medicineTimes.addAll(it.split("|").filter { s -> s.isNotBlank() })
+        }
+        statePrefs.getString("medLabels", null)?.takeIf { it.isNotBlank() }?.let {
+            medicineTimeLabels.clear(); medicineTimeLabels.addAll(it.split("|").filter { s -> s.isNotBlank() })
+        }
         // Load alarm instances
         val json = statePrefs.getString("alarm_instances_json", null)
         if (json != null) {
@@ -2878,6 +3306,11 @@ class AlarmListActivity : AppCompatActivity() {
             .putString("lunarRepeatSummary", lunarRepeatSummary)
             .putInt("lunarAdvanceDays", lunarAdvanceDays)
             .putBoolean("lunarAdvanceEnabled", lunarAdvanceEnabled)
+            .putString("medicineDrugName", medicineDrugName)
+            .putString("medicineDosage", medicineDosage)
+            .putBoolean("medicineVoiceEnabled", medicineVoiceEnabled)
+            .putString("medTimes", medicineTimes.joinToString("|"))
+            .putString("medLabels", medicineTimeLabels.joinToString("|"))
             .putString("alarm_instances_json", serializeInstancesToJson(alarmInstances))
             .apply()
     }

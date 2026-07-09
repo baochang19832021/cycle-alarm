@@ -7,10 +7,20 @@
 | 项目 | 内容 |
 |------|------|
 | **计划文件** | `C:\Users\ALIENWARE\.claude\plans\proud-frolicking-patterson.md` |
+| **双平台计划** | `C:\Users\ALIENWARE\.claude\plans\modular-leaping-toast.md` |
 | **版本** | `versionCode = 15`, `versionName = "1.0.14"` |
 | **SDK** | `compileSdk = 36`, `minSdk = 21`, `targetSdk = 35` |
 | **分支** | `codex/experiment-custom-ringtone-page` |
+| **鸿蒙分支** | `feature/harmonyos-next`（同仓分叉，异步开发） |
 | **恢复关键词** | 在新会话中输入 **`继续`** 或 **`resume`** 即可自动恢复 |
+
+### 🅱️ 鸿蒙 NEXT → `feature/harmonyos-next` 分支
+
+| 项目 | 内容 |
+|------|------|
+| **鸿蒙项目路径** | `D:\firstcc\harmonyos\`（仅存在鸿蒙分支） |
+| **当前进度** | Phase 1~3：项目结构 + domain 移植 + ReminderDemo + 19 测试 |
+| **下一步** | 安装 DevEco Studio 5.x → 编译运行 → 真机验证 |
 
 ## Android 版本兼容
 

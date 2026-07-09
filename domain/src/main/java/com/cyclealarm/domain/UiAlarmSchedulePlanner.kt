@@ -49,6 +49,23 @@ object UiAlarmSchedulePlanner {
             )
         }
 
+        if ("法定工作日" in selectedRules) {
+            val firstTrigger = LegalWorkdayHelper.nextWorkdayAtOrAfter(nowMs, hour, minute)
+            return listOf(
+                plan(
+                    id = "alarm_ui_regular_workday",
+                    firstTriggerMs = firstTrigger,
+                    intervalDays = 1,
+                    hour = hour,
+                    minute = minute,
+                    label = label,
+                    note = "法定工作日",
+                    ringtoneUri = ringtoneUri,
+                    vibrate = vibrate
+                )
+            )
+        }
+
         val plans = mutableListOf<SchedulePlan>()
         plans += WEEKDAY_RULES.mapNotNull { (rule, weekday) ->
             if (rule !in selectedRules) return@mapNotNull null

@@ -97,10 +97,96 @@
 
 ---
 
+## 预防机制
+
+**为什么反复出现相同错误？** 因为 `AlarmListActivity.kt` 2700+ 行，靠人记不可靠。
+
+**三道防线：**
+
+| 防线 | 工具 | 触发时机 |
+|------|------|---------|
+| 🔴 自动扫描 | `./pre-check.sh` | 每次改代码后、构建前 |
+| 🟡 安全构建 | `./safe_build.sh` | 一步完成：扫描 → 测试 → 构建 |
+| 🟢 错误库 | 本文件 | 新会话开始必读 |
+
+**每次改 `AlarmListActivity.kt` 后必须跑：**
+```bash
+./pre-check.sh    # 只扫描，不构建
+# 或
+./safe_build.sh   # 扫描 + 测试 + 构建 一条龙
+```
+
+---
+
+## 8. 对话框 "完成" → renderEdit() → 缓冲读不到
+
+**出现次数**: 3+（名称为0→已有）
+**严重度**: 🔴 高
+
+**根因**: 对话框"完成"按钮 → 写编辑缓冲 → 调 renderEdit() 重建页面 → 页面里读 `instance.xxx` 而非 `instanceXxx()` 辅助方法 → 显示旧值。
+
+**症状**: 改完标题/时长/日期，点"完成"后页面不更新。但点"保存"后能显示——因为保存时用辅助方法正确读了缓冲。
+
+**这是一个双重 Bug**:
+1. 对话框回调调了 renderEdit()（违反 ERROR #1）
+2. renderEdit() 里的 settingsRow 直接从 instance 读字段（违反 ERROR #4）
+
+**正确做法**: 
+- 对话框只写缓冲 + 行内更新对应 View（tag + findViewWithTag）
+- 永远走 `instanceTitle()` / `instanceDateMs()` 读值，不直接读 `instance.xxx`
+
+**自动检测**: `./pre-check.sh` ERROR #1 + ERROR #6 联合覆盖
+
+---
+
+## 9. 排序后 index 错位 — 用 sorted 的 idx 取 unsorted 的原列表
+
+**出现次数**: 1
+**严重度**: 🔴 高
+
+**根因**: 
+```kotlin
+val sorted = list.sortedBy { ... }
+sorted.forEachIndexed { idx, item ->
+    originalList[idx]  // ← idx 对应的是 sorted 的位次，不是 original 的！
+}
+```
+排序后的第 N 个元素，在原始列表里不是第 N 个。用 sorted 的 index 去 original 取数据，取到的不是同一个元素。
+
+**症状**: 列表显示数据错位、开关点了不起作用、页面乱跳。
+
+**正确做法**: 排序时把 ID 和数据绑在一起：
+```kotlin
+val cards = list.sortedBy { ... }.map { it.id to DemoAlarm(...) }
+cards.forEach { (id, item) -> alarmCard(id, item) }
+```
+
+**自动检测**: `./pre-check.sh` ERROR #9 检查 sortedBy/sortedWith + forEachIndexed 组合
+
+---
+
+## 10. 特殊重复规则被调度层忽略 — summary 有值但 selections 为空
+
+**出现次数**: 1
+**严重度**: 🔴 高
+
+**根因**: 对话框选择 "每天"/"每月"/"每年" 时，设置 `regularRepeatSummary = "每天"` 但 `regularRepeatSelections.clear()`。保存后 `repeatSelections` 为空。调度层 `schedulePlansForInstance` 只用 `repeatSelections` 构建 `selectedRules` → 空集 → `planRegular` 返回空 → 无闹钟注册。
+
+**症状**: 卡片显示 "每天"/"每月"/"每年"（从 repeatSummary 读取），但下次响铃显示 "待计算"，实际不响铃。
+
+**正确做法**: 调度层必须把 `repeatSummary` 中的特殊规则（每天/每月/每年）合并到 `selections` 里，不能只读 `repeatSelections`。
+
+**自动检测**: 人工 review。grep 难以检测这种逻辑漏洞。
+
+---
+
 ## 更新日志
 
 | 日期 | 条目 | 触发 bug |
 |------|:--:|------|
+| 2026-07-09 | #10 特殊重复规则被调度忽略 | 每天/每月/每年选后不响 |
+| 2026-07-09 | #9 排序 index 错位 | 闹钟开关失灵、页面乱跳 |
+| 2026-07-09 | #8 对话框完成→renderEdit→缓冲读不到 | 标题/时长/日期改完不显示 |
 | 2026-07-08 | #5 行内 View 层级 | 长按多选打钩失效 |
 | 2026-07-08 | #6 settingsRow 挤压 | 闹钟名称太长页面变形 |
 | 2026-07-08 | #3 空字符串陷阱 | 常规闹钟显示"待计算" |
