@@ -128,7 +128,8 @@ class AlarmListActivity : AppCompatActivity() {
         val dateMs: Long = 0L,
         val active: Boolean = true,
         val config: Map<String, String> = emptyMap(),
-        val createdAt: Long = System.currentTimeMillis()
+        val createdAt: Long = System.currentTimeMillis(),
+        val saved: Boolean = true
     )
 
     private val root by lazy { LinearLayout(this) }
@@ -632,7 +633,8 @@ class AlarmListActivity : AppCompatActivity() {
                     id = tempId,
                     type = feature,
                     title = defaultAlarmName(feature),
-                    dateMs = System.currentTimeMillis()
+                    dateMs = System.currentTimeMillis(),
+                    saved = false
                 )
                 alarmInstances.add(newInstance)
                 renderEdit(tempId, isNew = true)
@@ -694,6 +696,7 @@ class AlarmListActivity : AppCompatActivity() {
             if (isNew) {
                 alarmInstances.removeAll { it.id == instanceId }
                 cancelScheduledAlarmsForInstance(instanceId)
+                saveUiState()
             }
             editTitle = null; editDateMs = null; editMedicineName = null
             currentEditingInstanceId = null
@@ -716,7 +719,8 @@ class AlarmListActivity : AppCompatActivity() {
                 minute = saveMinute,
                 dateMs = instanceDateMs(instanceId),
                 active = true,
-                config = updatedConfig
+                config = updatedConfig,
+                saved = true
             )
             val idx = alarmInstances.indexOfFirst { it.id == instanceId }
             if (idx >= 0) alarmInstances[idx] = updatedInstance
@@ -2880,6 +2884,9 @@ class AlarmListActivity : AppCompatActivity() {
     private fun serializeInstancesToJson(instances: List<AlarmInstance>): String {
         val arr = org.json.JSONArray()
         for (inst in instances) {
+            // Never persist unsaved (in-edit) instances — they would become
+            // stale zombies on next load if the user cancels without saving.
+            if (!inst.saved) continue
             val obj = org.json.JSONObject().apply {
                 put("id", inst.id)
                 put("type", inst.type.name)

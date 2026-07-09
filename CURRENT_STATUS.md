@@ -4,6 +4,17 @@
 
 下一步建议：提交代码、真机测试、合并到 main
 
+### 2026-07-10：修复僵尸闹钟实例 Bug
+
+- 🔴 **Bug**：编辑中途 `saveUiState()` 把未保存的临时 `AlarmInstance` 写入 SharedPreferences。用户取消后临时实例只从内存移除，磁盘上仍保留。下次进入 App 时僵尸实例复活，产生重复卡片。
+- ✅ **修复**：
+  - `AlarmInstance` 添加 `saved` 字段。新建时 `saved = false`，保存时 `saved = true`
+  - `serializeInstancesToJson` 只持久化 `saved == true` 的实例
+  - 取消时调用 `saveUiState()` 同步清理磁盘（纵深防御）
+- ✅ **防御**：`pre-check.sh` 新增 ERROR #8 检测规则
+- ✅ **验证**：`pre-check.sh` + `testDebugUnitTest` + `assembleDebug` 全部通过
+- ⚠️ **注意**：修复前已产生的僵尸实例需手动删除一次（长按卡片 → 删除），之后不会再出现
+
 | 项目 | 内容 |
 |------|------|
 | **计划文件** | `C:\Users\ALIENWARE\.claude\plans\proud-frolicking-patterson.md` |

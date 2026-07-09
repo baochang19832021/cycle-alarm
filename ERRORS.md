@@ -97,6 +97,23 @@
 
 ---
 
+## 8. 编辑中途 saveUiState → 取消后僵尸实例复活
+
+**出现次数**: 1（2026-07-10）
+**严重度**: 🔴 高
+
+**根因**: 用户点功能卡片创建闹钟时，`functionCard` 立刻把临时 `AlarmInstance` 加入 `alarmInstances` 列表。编辑过程中的任何交互（改铃声、改日期、切换振动等）都调用 `saveUiState()`，把整个 `alarmInstances`（含未保存的临时实例）序列化到 SharedPreferences。用户点「取消」只从内存中 `removeAll`，**不调用 `saveUiState()` 同步磁盘**。下次进入 App，僵尸实例从 SharedPreferences 复活。
+
+**修复**:
+1. `AlarmInstance` 添加 `saved` 字段（默认 `true`）。新建临时实例时 `saved = false`，保存时 `saved = true`
+2. `serializeInstancesToJson` 跳过 `saved == false` 的实例，杜绝临时实例落盘
+3. `onCancel` 中添加 `saveUiState()` 作为纵深防御
+4. 向后兼容：旧 JSON 数据不含 `saved` 字段，Kotlin data class 默认值 `true` 确保已有数据不受影响
+
+**详细**: `AlarmListActivity.kt` — `AlarmInstance` 数据类、`functionCard`、`serializeInstancesToJson`、`onCancel`
+
+---
+
 ## 预防机制
 
 **为什么反复出现相同错误？** 因为 `AlarmListActivity.kt` 2700+ 行，靠人记不可靠。

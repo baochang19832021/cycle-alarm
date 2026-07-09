@@ -206,6 +206,33 @@ fi
 echo ""
 
 # ═══════════════════════════════════════════════════════════
+# ERROR #8: 编辑中途 saveUiState → 取消后僵尸实例复活
+# 反模式: functionCard 创建 AlarmInstance 不设 saved = false
+# 正确做法: 新建实例 saved = false，serializeInstancesToJson 跳过
+# 记忆: 在 ERRORS.md #8
+# ═══════════════════════════════════════════════════════════
+echo "── ERROR #8: 临时实例落盘（僵尸闹钟）──"
+# 只检测 functionCard 里创建临时实例不设 saved = false
+# parseInstancesFromJson / migrateFromOldFormat 的实例应该 saved = true（默认值）
+FC_SECTION=$(grep -n 'private fun functionCard' "$MAIN_FILE" | cut -d: -f1)
+if [ -n "$FC_SECTION" ]; then
+    # functionCard 函数约 45 行，检查其内的 AlarmInstance 构造
+    FC_BLOCK=$(sed -n "${FC_SECTION},$((FC_SECTION + 50))p" "$MAIN_FILE")
+    if echo "$FC_BLOCK" | grep -q 'AlarmInstance(' && ! echo "$FC_BLOCK" | grep -q 'saved\s*=\s*false'; then
+        echo "  🔴 functionCard 中 AlarmInstance 创建未设 saved = false"
+        echo "  → 新建临时实例必须 set saved = false"
+        echo "  → serializeInstancesToJson 自动跳过未保存实例"
+        echo "  → 参考 ERRORS.md #8"
+        WARNINGS=$((WARNINGS + 1))
+    else
+        echo "  ✅ 通过"
+    fi
+else
+    echo "  ℹ️  未找到 functionCard，跳过"
+fi
+echo ""
+
+# ═══════════════════════════════════════════════════════════
 # 额外检查: 重复代码模式（同一逻辑写了两遍以上）
 # 维护性风险，容易一处修了另一处忘
 # ═══════════════════════════════════════════════════════════
