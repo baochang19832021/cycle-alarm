@@ -8,3 +8,11 @@ captures
 local.properties
 app/build/
 build/
+releases/
+stage_packages/
+
+# 鸿蒙 NEXT
+harmonyos/.idea/
+harmonyos/.hvigor/
+harmonyos/oh_modules/
+harmonyos/build/
