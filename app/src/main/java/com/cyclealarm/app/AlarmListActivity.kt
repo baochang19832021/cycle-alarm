@@ -795,11 +795,11 @@ class AlarmListActivity : AppCompatActivity() {
                     column.addView(lunarAdvanceRow(instanceId))
                 }
                 FeatureType.MEDICINE -> {
-                    column.addView(settingsRow("药品名称", medicineDrugName.ifEmpty { "未设置" }, true) {
-                        showMedicineDetailDialog("药品名称", medicineDrugName, "如：降压药、阿莫西林") { medicineDrugName = it; saveUiState() }
+                    column.addView(medicineDetailRow("药品名称", medicineDrugName, "drug_name_$instanceId", "如：降压药、阿莫西林") {
+                        medicineDrugName = it; saveUiState()
                     })
-                    column.addView(settingsRow("用法用量", medicineDosage.ifEmpty { "未设置" }, true) {
-                        showMedicineDetailDialog("用法用量", medicineDosage, "如：每次1片、每日3次") { medicineDosage = it; saveUiState() }
+                    column.addView(medicineDetailRow("用法用量", medicineDosage, "dosage_$instanceId", "如：每次1片、每日3次") {
+                        medicineDosage = it; saveUiState()
                     })
                     // Quick presets
                     column.addView(medicinePresetRow(feature.accent))
@@ -813,12 +813,15 @@ class AlarmListActivity : AppCompatActivity() {
                 }
                 FeatureType.SHIFT -> Unit
             }
-            val ringRow2 = ringtoneSettingsRow(instanceId)
-            ringRow2.tag = "ringtone_$instanceId"
-            column.addView(ringRow2)
-            column.addView(vibrationButtonRow(instanceId))
-            val ringDurationRow = settingsRow("响铃时长", "${ringDurationMinutes}分钟", true) {
-                showNumberOptionDialog("响铃时长", ringDurationMinutes, 1..10, "分钟", feature.accent) {
+            if (feature != FeatureType.MEDICINE) {
+                val ringRow2 = ringtoneSettingsRow(instanceId)
+                ringRow2.tag = "ringtone_$instanceId"
+                column.addView(ringRow2)
+                column.addView(vibrationButtonRow(instanceId))
+            }
+            val durationLabel = if (feature == FeatureType.MEDICINE) "播报时长" else "响铃时长"
+            val ringDurationRow = settingsRow(durationLabel, "${ringDurationMinutes}分钟", true) {
+                showNumberOptionDialog(durationLabel, ringDurationMinutes, 1..10, "分钟", feature.accent) {
                     ringDurationMinutes = it
                     saveUiState()
                     // Update row in-place instead of rebuilding the whole page
@@ -880,18 +883,20 @@ class AlarmListActivity : AppCompatActivity() {
         }
     }
 
-    private fun timeWheels(hour: Int, minute: Int, onChange: (Int, Int) -> Unit): View {
+    private fun timeWheels(initialHour: Int, initialMinute: Int, onChange: (Int, Int) -> Unit): View {
+        var hour = initialHour
+        var minute = initialMinute
         val hourWheel = WheelView(this, 48, 3).apply {
             isCyclic = true
             items = (0..23).map { String.format("%02d", it) }
             currentIndex = hour
-            onIndexChanged = { onChange(it, minute) }
+            onIndexChanged = { hour = it; onChange(hour, minute) }
         }
         val minuteWheel = WheelView(this, 48, 3).apply {
             isCyclic = true
             items = (0..59).map { String.format("%02d", it) }
             currentIndex = minute
-            onIndexChanged = { onChange(hour, it) }
+            onIndexChanged = { minute = it; onChange(hour, minute) }
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -2123,10 +2128,12 @@ class AlarmListActivity : AppCompatActivity() {
             isHapticFeedbackEnabled = false
             isSoundEffectsEnabled = false
         }
+        val snoozeLabel = if (inst.type == FeatureType.MEDICINE) "再次播报" else "再次响铃"
+        val snoozeDialogTitle = if (inst.type == FeatureType.MEDICINE) "再次播报间隔" else "再次响铃间隔"
         // Reusable update function — only rebuilds this row, not the whole page
         fun rebuildRow() {
             row.removeAllViews()
-            row.addView(labelTextView("再次响铃"), LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(labelTextView(snoozeLabel), LinearLayout.LayoutParams(0, -2, 1f))
             if (snoozeEnabled) {
                 row.addView(TextView(ctx).apply {
                     text = "${snoozeMinutes}分钟"
@@ -2139,7 +2146,7 @@ class AlarmListActivity : AppCompatActivity() {
                     isHapticFeedbackEnabled = false
                     isSoundEffectsEnabled = false
                     setOnClickListener {
-                        showNumberOptionDialog("再次响铃间隔", snoozeMinutes, 1..30, "分钟", inst.type.accent) {
+                        showNumberOptionDialog(snoozeDialogTitle, snoozeMinutes, 1..30, "分钟", inst.type.accent) {
                             snoozeMinutes = it
                             saveUiState()
                             rebuildRow()
@@ -2158,7 +2165,7 @@ class AlarmListActivity : AppCompatActivity() {
             // Row tap opens minutes dialog (not toggle switch)
             row.setOnClickListener {
                 if (snoozeEnabled) {
-                    showNumberOptionDialog("再次响铃间隔", snoozeMinutes, 1..30, "分钟", inst.type.accent) {
+                    showNumberOptionDialog(snoozeDialogTitle, snoozeMinutes, 1..30, "分钟", inst.type.accent) {
                         snoozeMinutes = it
                         saveUiState()
                         rebuildRow()
@@ -2343,6 +2350,25 @@ class AlarmListActivity : AppCompatActivity() {
             .show()
     }
 
+    /** Reusable row: label + editable value with dialog + auto-update. One source of truth. */
+    private fun medicineDetailRow(
+        label: String, currentValue: String, tag: String,
+        hint: String, onChanged: (String) -> Unit
+    ): View {
+        val display = currentValue.ifEmpty { "未设置" }
+        val row = settingsRow(label, display, true) {
+            showMedicineDetailDialog(label, currentValue, hint) { newValue ->
+                onChanged(newValue)
+                // Update row text in-place
+                (findViewById<View>(android.R.id.content)?.findViewWithTag<View>(tag) as? LinearLayout)?.let { r ->
+                    (r.getChildAt(1) as? TextView)?.text = newValue.ifEmpty { "未设置" }
+                }
+            }
+        }
+        row.tag = tag
+        return row
+    }
+
     private fun showMedicineDetailDialog(title: String, current: String, placeholder: String, onDone: (String) -> Unit) {
         val input = EditText(this).apply {
             setText(current)
@@ -2518,13 +2544,15 @@ class AlarmListActivity : AppCompatActivity() {
         fun rebuildRow() {
             row.removeAllViews()
             row.addView(labelTextView("语音播报"), LinearLayout.LayoutParams(0, -2, 1f))
-            row.addView(TextView(ctx).apply {
-                text = if (medicineVoiceEnabled) "响铃时播报" else "仅响铃"
-                textSize = 13f
-                setTextColor(0xFF8EA0B8.toInt())
-                gravity = Gravity.RIGHT
-                setPadding(0, 0, dp(12), 0)
-            })
+            if (!medicineVoiceEnabled) {
+                row.addView(TextView(ctx).apply {
+                    text = "仅振动"
+                    textSize = 13f
+                    setTextColor(0xFF8EA0B8.toInt())
+                    gravity = Gravity.RIGHT
+                    setPadding(0, 0, dp(10), 0)
+                })
+            }
             row.addView(MaterialSwitch(ctx).apply {
                 isChecked = medicineVoiceEnabled
                 setOnCheckedChangeListener { _, checked ->

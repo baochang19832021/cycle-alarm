@@ -16,10 +16,6 @@ import androidx.appcompat.app.AppCompatActivity
 
 class AlarmRingingActivity : AppCompatActivity() {
 
-    private var dismissCountDown = 0
-    private val handler = Handler(Looper.getMainLooper())
-    private var dismissRunnable: Runnable? = null
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -61,29 +57,10 @@ class AlarmRingingActivity : AppCompatActivity() {
         val now = java.text.SimpleDateFormat("HH:mm", java.util.Locale.CHINA).format(java.util.Date())
         findViewById<TextView>(R.id.tvAlarmTime).text = now
 
-        // ── Long-press to dismiss (anti-accidental) ──
+        // ── Simple tap to close ──
         val btnDismiss = findViewById<Button>(R.id.btnDismiss)
-        var dismissing = false
         btnDismiss.setOnClickListener {
-            if (!dismissing) {
-                dismissing = true
-                btnDismiss.text = "长按 2 秒关闭"
-                Toast.makeText(this, "请长按按钮 2 秒关闭闹钟", Toast.LENGTH_SHORT).show()
-                dismissCountDown = 0
-                dismissRunnable?.let { handler.removeCallbacks(it) }
-                dismissRunnable = object : Runnable {
-                    override fun run() {
-                        dismissCountDown++
-                        btnDismiss.text = "长按 ${3 - dismissCountDown} 秒关闭"
-                        if (dismissCountDown >= 3) {
-                            performDismiss(alarmId, medicineName, isTest)
-                        } else {
-                            handler.postDelayed(this, 800)
-                        }
-                    }
-                }
-                handler.postDelayed(dismissRunnable!!, 800)
-            }
+            performDismiss(alarmId, medicineName, isTest)
         }
 
         val prefs = getSharedPreferences("pixso_ui_alarm_state", Context.MODE_PRIVATE)
@@ -106,22 +83,7 @@ class AlarmRingingActivity : AppCompatActivity() {
 
     private fun performDismiss(alarmId: String?, medicineName: String, isTest: Boolean) {
         AlarmService.stop(this, shouldReschedule = !isTest && !alarmId.isNullOrEmpty())
-
-        // Medicine confirmation dialog
-        if (medicineName.isNotEmpty()) {
-            AlertDialog.Builder(this)
-                .setTitle("服药确认")
-                .setMessage("已服用 $medicineName 了吗？")
-                .setPositiveButton("已服药") { _, _ ->
-                    Toast.makeText(this, "已记录服药", Toast.LENGTH_SHORT).show()
-                    finish()
-                }
-                .setNegativeButton("稍后") { _, _ -> finish() }
-                .setCancelable(false)
-                .show()
-        } else {
-            finish()
-        }
+        finish()
     }
 
     override fun onBackPressed() {

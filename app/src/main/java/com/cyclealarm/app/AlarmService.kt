@@ -90,6 +90,7 @@ class AlarmService : Service() {
     private var currentIsTest: Boolean = false
     private var currentMedName: String = ""
     private var tts: TextToSpeech? = null
+    private var medicineVoicePlayer: MediaPlayer? = null
     private var audioManager: AudioManager? = null
     private var volumeHandler: Handler? = null
     private var volumeRunnable: Runnable? = null
@@ -166,22 +167,19 @@ class AlarmService : Service() {
         } catch (_: SecurityException) {}
         requestAudioFocus()
 
-        startRingtone(ringtone)
-        if (intent?.getBooleanExtra(EXTRA_VIBRATE, true) != false) startVibration()
-        // Voice announcement: try TTS first, fall back to built-in beep pattern
+        // Medicine alarm: voice ×3 if enabled, otherwise vibration only
         if (medicineName.isNotEmpty()) {
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                speakMedicineName(medicineName)
-            }, 3000L)
+            if (intent?.getBooleanExtra(EXTRA_VIBRATE, true) != false) startVibration()
+            startMedicineVoiceCycle(medicineName)
         } else if (isMedicineAlarm) {
-            // Medicine alarm without TTS — use built-in distinct beep pattern
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                playMedicineFallbackBeep()
-            }, 3000L)
+            // Voice disabled — vibration only
+            if (intent?.getBooleanExtra(EXTRA_VIBRATE, true) != false) startVibration()
+        } else {
+            startRingtone(ringtone)
+            if (intent?.getBooleanExtra(EXTRA_VIBRATE, true) != false) startVibration()
+            // ── Rising volume: 20% → 100% over ~30 seconds ──
+            startRisingVolume()
         }
-
-        // ── Rising volume: 20% → 100% over ~30 seconds ──
-        startRisingVolume()
 
         // ── Auto-stop after 10 minutes (keep notification) ──
         startAutoTimeout(alarmId, isTest)
@@ -199,84 +197,144 @@ class AlarmService : Service() {
         cleanup()
     }
 
-    private fun speakMedicineName(name: String) {
-        // Lower ringtone volume so voice is clearly audible
-        try { mediaPlayer?.setVolume(0.1f, 0.1f) } catch (_: Exception) {}
+    private var medicineCycleHandler: Handler? = null
+    private var medicineCycleRunning = false
 
+    /** Simple medicine cycle: 5s ringtone → 3× voice → repeat */
+    private fun startMedicineVoiceCycle(name: String) {
+        medicineCycleRunning = true
+        medicineCycleHandler = Handler(Looper.getMainLooper())
+        runMedicineCycle(name)
+    }
+
+    private fun runMedicineCycle(name: String) {
+        if (!medicineCycleRunning) return
+
+        // Phase: speak 3× voice immediately
+        if (name.isNotEmpty()) {
+            speakWithTts(name)
+        } else {
+            speakWithBundledVoice()
+        }
+    }
+
+    private fun onVoicePhaseDone() {
+        // Wait 5 seconds, then repeat voice cycle
+        if (!medicineCycleRunning) return
+        medicineCycleHandler?.postDelayed({
+            runMedicineCycle(currentMedName)
+        }, 5000L)
+    }
+
+    private fun speakWithTts(name: String) {
+        // Release previous TTS instance to avoid resource exhaustion
+        try { tts?.shutdown() } catch (_: Exception) {}
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                // Use alarm stream so voice plays even when media volume is off
-                tts?.setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ALARM)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                // Try Chinese first, fall back to bundled voice if not available
+                tts?.setAudioAttributes(AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build())
                 val langResult = tts?.setLanguage(java.util.Locale.CHINESE) ?: TextToSpeech.LANG_MISSING_DATA
                 if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    // Chinese TTS not available — use bundled voice file instead
-                    try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
-                    playMedicineFallbackBeep()
-                    return@TextToSpeech
+                    try { tts?.shutdown() } catch (_: Exception) {}
+                    speakWithBundledVoice(); return@TextToSpeech
                 }
-                val utteranceId = "med_${System.currentTimeMillis()}"
-                val text = "该吃${name}了"
-
+                // Speak 3 times continuously as one utterance
+                val text = "该吃${name}了！该吃${name}了！该吃${name}了！"
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                     tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                        override fun onDone(utteranceId: String?) {
-                            try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
-                        }
+                        override fun onDone(id: String?) = onVoicePhaseDone()
                         @Deprecated("Deprecated in Java")
-                        override fun onError(utteranceId: String?) {
-                            try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
-                        }
-                        override fun onStart(utteranceId: String?) {}
+                        override fun onError(id: String?) = onVoicePhaseDone()
+                        override fun onStart(id: String?) {}
                     })
-                    tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+                    tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "med_${System.currentTimeMillis()}")
                 } else {
                     @Suppress("DEPRECATION")
                     tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null)
-                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                        try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
-                    }, 3000L)
+                    medicineCycleHandler?.postDelayed({ onVoicePhaseDone() }, 6000L)
                 }
             } else {
-                // TTS init failed — use built-in beep fallback
-                try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
-                playMedicineFallbackBeep()
+                try { tts?.shutdown() } catch (_: Exception) {}
+                speakWithBundledVoice()
             }
         }
     }
 
-    private fun playMedicineFallbackBeep() {
-        // Play bundled voice audio "该吃药了" — real human voice, no TTS needed.
-        // Falls back to TTS for medicine name announcement if available.
+    private fun speakWithBundledVoice() {
         try {
-            try { mediaPlayer?.setVolume(0.05f, 0.05f) } catch (_: Exception) {}
-            val voicePlayer = MediaPlayer().apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ALARM)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                setDataSource(this@AlarmService, Uri.parse("android.resource://${packageName}/${R.raw.medicine_voice}"))
-                setOnCompletionListener {
-                    try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
-                    release()
-                }
-                setOnErrorListener { _, _, _ ->
-                    try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
-                    release(); true
-                }
-                prepare()
-                start()
+            // Release old player
+            try { medicineVoicePlayer?.release() } catch (_: Exception) {}
+            val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+            val resId = when (hour) {
+                in 5..11 -> R.raw.med_morning
+                in 12..17 -> R.raw.med_noon
+                else -> R.raw.med_evening
             }
-        } catch (_: Exception) {
-            try { mediaPlayer?.setVolume(1f, 1f) } catch (_: Exception) {}
-        }
+            medicineVoicePlayer = MediaPlayer().apply {
+                setAudioAttributes(AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build())
+                setDataSource(this@AlarmService, Uri.parse("android.resource://${packageName}/$resId"))
+                setOnCompletionListener { onVoicePhaseDone() }
+                setOnErrorListener { _, _, _ -> onVoicePhaseDone(); true }
+                prepare(); start()
+            }
+        } catch (_: Exception) { onVoicePhaseDone() }
+    }
+
+    private fun playMedicineFallbackBeep() { speakWithBundledVoice() }
+    private fun speakMedicineName(name: String) { startMedicineVoiceCycle(name) }
+
+    /** Music-box style chime: C5→E5→G5→C6 ascending arpeggio, warm & pleasant */
+    private fun playMedicineChime() {
+        try {
+            val sampleRate = 44100
+            val noteLen = sampleRate * 180 / 1000  // 180ms per note
+            val gapLen = sampleRate * 60 / 1000     // 60ms gap between notes
+            val totalSamples = (noteLen + gapLen) * 4
+            val buffer = ShortArray(totalSamples)
+
+            val freqs = intArrayOf(523, 659, 784, 1047) // C5 E5 G5 C6
+
+            for (n in freqs.indices) {
+                val offset = n * (noteLen + gapLen)
+                for (i in 0 until noteLen) {
+                    val pos = offset + i
+                    if (pos >= totalSamples) break
+                    val t = i.toDouble() / sampleRate
+                    // Bell-like envelope: fast attack, gentle decay
+                    val envelope = Math.exp(-t * 5.0) * 0.7
+                    // Add a second overtone for warmth (octave up, quieter)
+                    val fundamental = Math.sin(2.0 * Math.PI * freqs[n] * t)
+                    val overtone = Math.sin(2.0 * Math.PI * freqs[n] * 2 * t) * 0.15
+                    val sample = ((fundamental + overtone) * 16384 * envelope).toInt().toShort()
+                    buffer[pos] = sample
+                }
+            }
+
+            val track = android.media.AudioTrack(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build(),
+                android.media.AudioFormat.Builder()
+                    .setSampleRate(sampleRate)
+                    .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                    .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
+                    .build(),
+                totalSamples * 2,
+                android.media.AudioTrack.MODE_STATIC,
+                0
+            )
+            track.write(buffer, 0, totalSamples)
+            track.play()
+            medicineCycleHandler?.postDelayed({
+                try { track.release() } catch (_: Exception) {}
+            }, 1200L)
+        } catch (_: Exception) {}
     }
 
     private fun startRingtone(ringtonePath: String?) {
@@ -518,6 +576,11 @@ class AlarmService : Service() {
     }
 
     private fun cleanup() {
+        medicineCycleRunning = false
+        medicineCycleHandler?.removeCallbacksAndMessages(null)
+        medicineCycleHandler = null
+        try { medicineVoicePlayer?.release() } catch (_: Exception) {}
+        medicineVoicePlayer = null
         try {
             mediaPlayer?.apply {
                 if (isPlaying) stop()

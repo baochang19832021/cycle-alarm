@@ -180,10 +180,32 @@ cards.forEach { (id, item) -> alarmCard(id, item) }
 
 ---
 
+## 11. 时间滚轮两个轮子互相覆盖 — hour/minute 参数捕获
+
+**出现次数**: 1
+**严重度**: 🔴 高（影响所有编辑页）
+
+**根因**: `timeWheels(hour, minute, onChange)` 中：
+```kotlin
+hourWheel.onIndexChanged = { onChange(it, minute) }   // minute 是函数参数val，永不变！
+minuteWheel.onIndexChanged = { onChange(hour, it) }   // hour 是函数参数val，永不变！
+```
+滚完小时再滚分钟 → 小时被重置为初始值。两个轮子互相覆盖。
+
+**正确做法**: 用 `var` 存当前值：
+```kotlin
+var hour = initialHour; var minute = initialMinute
+hourWheel.onIndexChanged = { hour = it; onChange(hour, minute) }
+minuteWheel.onIndexChanged = { minute = it; onChange(hour, minute) }
+```
+
+---
+
 ## 更新日志
 
 | 日期 | 条目 | 触发 bug |
 |------|:--:|------|
+| 2026-07-09 | #11 时间滚轮互相覆盖 | 滚完小时滚分钟，值被重置 |
 | 2026-07-09 | #10 特殊重复规则被调度忽略 | 每天/每月/每年选后不响 |
 | 2026-07-09 | #9 排序 index 错位 | 闹钟开关失灵、页面乱跳 |
 | 2026-07-09 | #8 对话框完成→renderEdit→缓冲读不到 | 标题/时长/日期改完不显示 |

@@ -13,6 +13,7 @@
 
 1. `CLAUDE.md`（本文件）
 2. `ERRORS.md` — 🔴 错误库，每次写代码前必读，避免重复犯错
+2. `.claude/agents/android_dev_patterns.md` — 🧠 开发经验库，铁律+可复用模式
 3. `CURRENT_STATUS.md` — 最新开发状态、版本号、验证结果
 3. `TASK_ROUTING.md` — 按任务类型路由到对应文档和 agent
 4. 相关 `.agents/*.md` — 按任务类型读取
