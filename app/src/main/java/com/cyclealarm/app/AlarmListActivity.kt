@@ -183,7 +183,7 @@ class AlarmListActivity : AppCompatActivity() {
     private var ttsCheckDone = false
     private var ttsAvailable = false
     private val medicineTimes = mutableListOf("08:00", "20:00")
-    private val medicineTimeLabels = mutableListOf("早饭後", "晚饭後")
+    private val medicineTimeLabels = mutableListOf("早饭后", "晚饭后")
     private var editTitle: String? = null
     private var editDateMs: Long? = null
     private var editMedicineName: String? = null
@@ -700,7 +700,7 @@ class AlarmListActivity : AppCompatActivity() {
             }
             editTitle = null; editDateMs = null; editMedicineName = null
             currentEditingInstanceId = null
-            selectTab(Tab.FUNCTIONS)
+            selectTab(Tab.ALARMS)
         }) {
             // Save: serialize edit state back into instance
             val updatedConfig = buildConfigForType(feature)
@@ -2414,9 +2414,9 @@ class AlarmListActivity : AppCompatActivity() {
         medicineTimes.clear()
         medicineTimeLabels.clear()
         when (count) {
-            1 -> { medicineTimes.add("08:00"); medicineTimeLabels.add("早饭後") }
-            2 -> { medicineTimes.addAll(listOf("08:00", "20:00")); medicineTimeLabels.addAll(listOf("早饭後", "晚饭後")) }
-            3 -> { medicineTimes.addAll(listOf("08:00", "12:30", "19:00")); medicineTimeLabels.addAll(listOf("早饭後", "午饭后", "晚饭後")) }
+            1 -> { medicineTimes.add("08:00"); medicineTimeLabels.add("早饭后") }
+            2 -> { medicineTimes.addAll(listOf("08:00", "20:00")); medicineTimeLabels.addAll(listOf("早饭后", "晚饭后")) }
+            3 -> { medicineTimes.addAll(listOf("08:00", "12:30", "19:00")); medicineTimeLabels.addAll(listOf("早饭后", "午饭后", "晚饭后")) }
         }
         saveUiState()
     }
@@ -2499,7 +2499,7 @@ class AlarmListActivity : AppCompatActivity() {
 
     private fun showMedicineLabelDialog(idx: Int, instanceId: String) {
         val current = medicineTimeLabels.getOrElse(idx) { "" }
-        showMedicineDetailDialog("时段标签", current, "如：早饭後、睡前") { label ->
+        showMedicineDetailDialog("时段标签", current, "如：早饭后、睡前") { label ->
             if (idx < medicineTimeLabels.size) medicineTimeLabels[idx] = label
             else medicineTimeLabels.add(label)
             saveUiState()
@@ -3222,8 +3222,8 @@ class AlarmListActivity : AppCompatActivity() {
         if (years <= 0 && hours > 0) parts.add("${hours}小时")
         // Sub-month precision only when no months/years present
         if (years <= 0 && rawMonths <= 0 && minutes > 0) parts.add("${minutes}分钟")
-        // Seconds only shown when within 24h — otherwise meaningless flicker
-        if (years <= 0 && rawMonths <= 0 && days == 0L) parts.add("${seconds}秒")
+        // Seconds only shown when countdown is in minutes range (no hours/days/months/years)
+        if (years <= 0 && rawMonths <= 0 && days == 0L && hours <= 0) parts.add("${seconds}秒")
 
         return "还有 " + parts.joinToString("")
     }

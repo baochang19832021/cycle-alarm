@@ -231,6 +231,7 @@ object AlarmScheduler {
             requestCode = showIntentRequestCode,
             label = data.label,
             note = data.note,
+            medicineName = data.medicineName,
             alarmId = data.id,
             isTest = false
         )
@@ -402,6 +403,7 @@ object AlarmScheduler {
             requestCode = RELIABILITY_TEST_REQUEST_CODE + 1,
             label = "测试响铃",
             note = "周期闹钟测试响铃",
+            medicineName = "",
             alarmId = null,
             isTest = true
         )
@@ -481,12 +483,14 @@ object AlarmScheduler {
         requestCode: Int,
         label: String,
         note: String,
+        medicineName: String,
         alarmId: String?,
         isTest: Boolean
     ): PendingIntent {
         val intent = Intent(context, AlarmRingingActivity::class.java).apply {
             putExtra(AlarmService.EXTRA_LABEL, label)
             putExtra(AlarmService.EXTRA_NOTE, note)
+            putExtra(AlarmService.EXTRA_MEDICINE_NAME, medicineName)
             putExtra(AlarmService.EXTRA_IS_TEST, isTest)
             if (alarmId != null) putExtra(AlarmService.EXTRA_ALARM_ID, alarmId)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)

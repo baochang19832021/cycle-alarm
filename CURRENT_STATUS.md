@@ -2,7 +2,17 @@
 
 **全部 7 个 Phase 已完成 + Android 15+ 兼容 🎉**
 
-下一步建议：提交代码、真机测试、合并到 main
+下一步建议：真机测试 → 合并到 main
+
+### 2026-07-11：移除 TTS 引擎 + 铃声回退链加固
+
+- ✅ **AlarmService.kt**: 彻底移除 TextToSpeech 引擎，统一使用内置真人语音（`med_morning`/`med_noon`/`med_evening` 按时段选择）
+  - 删除 `speakWithTts()`、`onVoicePhaseDone()` 死代码
+  - 新增 `playBundledVoice(count)` 支持多次循环播放 + 失败重试
+  - 移除 `tts` 字段及 TTS 相关 import
+- ✅ **AlarmRingingActivity.kt**: `requestDismissKeyguard()` 加 `isDeviceLocked` 守卫 + try-catch
+- ✅ **AlarmListActivity.kt**: `updateCardCheckbox()` 空安全防御 + 日历休息日文字色改为深色 `#111827`
+- ✅ **验证**: `assembleDebug` ✅ + `:domain:test` ✅
 
 ### 2026-07-10：修复僵尸闹钟实例 Bug
 

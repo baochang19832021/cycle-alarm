@@ -47,7 +47,7 @@ class AlarmReceiver : BroadcastReceiver() {
 
         // Post the full-screen alarm notification first. On strict ROMs this is
         // often more reliable than launching an Activity directly from background.
-        showFiredNotification(context, label, note, alarmId, isTest)
+        showFiredNotification(context, label, note, medicineName, alarmId, isTest)
 
         // Launch ForegroundService to handle ringing
         AlarmService.start(context, label, ringtone, note, medicineName, alarmId, vibrate, isTest)
@@ -64,6 +64,7 @@ class AlarmReceiver : BroadcastReceiver() {
         context: Context,
         label: String,
         note: String,
+        medicineName: String,
         alarmId: String?,
         isTest: Boolean
     ) {
@@ -90,6 +91,7 @@ class AlarmReceiver : BroadcastReceiver() {
         val launchIntent = Intent(context, AlarmRingingActivity::class.java).apply {
             putExtra(AlarmService.EXTRA_LABEL, label)
             putExtra(AlarmService.EXTRA_NOTE, note)
+            putExtra(AlarmService.EXTRA_MEDICINE_NAME, medicineName)
             putExtra(AlarmService.EXTRA_IS_TEST, isTest)
             if (alarmId != null) putExtra(AlarmService.EXTRA_ALARM_ID, alarmId)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)

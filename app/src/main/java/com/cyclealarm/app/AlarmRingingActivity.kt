@@ -16,63 +16,75 @@ import androidx.appcompat.app.AppCompatActivity
 
 class AlarmRingingActivity : AppCompatActivity() {
 
+    // ── Cached UI references for refresh on onNewIntent ──
+    private var tvIcon: TextView? = null
+    private var tvLabel: TextView? = null
+    private var tvNote: TextView? = null
+    private var tvTime: TextView? = null
+    private var btnSnooze: Button? = null
+    private var btnDismiss: Button? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         applyLockScreenWindowFlags()
-
         setContentView(R.layout.activity_alarm_ringing)
 
+        tvIcon = findViewById(R.id.tvAlarmIcon)
+        tvLabel = findViewById(R.id.tvAlarmLabel)
+        tvNote = findViewById(R.id.tvAlarmNote)
+        tvTime = findViewById(R.id.tvAlarmTime)
+        btnSnooze = findViewById(R.id.btnSnooze)
+        btnDismiss = findViewById(R.id.btnDismiss)
+
+        refreshUI()
+    }
+
+    /** Refresh all UI from current intent extras. Called from both onCreate and onNewIntent. */
+    private fun refreshUI() {
         val label = intent.getStringExtra("label") ?: "周期闹钟"
         val note = intent.getStringExtra("note") ?: ""
         val medicineName = intent.getStringExtra(AlarmService.EXTRA_MEDICINE_NAME) ?: ""
         val alarmId = intent.getStringExtra("alarm_id")
         val isTest = intent.getBooleanExtra(AlarmService.EXTRA_IS_TEST, false)
 
-        val tvIcon = findViewById<TextView>(R.id.tvAlarmIcon)
-        val tvLabel = findViewById<TextView>(R.id.tvAlarmLabel)
-        val tvNote = findViewById<TextView>(R.id.tvAlarmNote)
-
         // Title always shows the alarm name
-        tvLabel.text = label
+        tvLabel?.text = label
 
         // Supplementary info: medicine or rule
         if (medicineName.isNotEmpty()) {
-            tvIcon.text = "💊"
-            tvNote.text = medicineName
-            tvNote.visibility = android.view.View.VISIBLE
-            tvNote.setTextColor(0xFFE65100.toInt())
-            tvNote.textSize = 26f
+            tvIcon?.text = "💊"
+            tvNote?.text = medicineName
+            tvNote?.visibility = android.view.View.VISIBLE
+            tvNote?.setTextColor(0xFFE65100.toInt())
+            tvNote?.textSize = 26f
         } else if (note.isNotEmpty()) {
-            tvIcon.text = "⏰"
-            tvNote.text = note
-            tvNote.visibility = android.view.View.VISIBLE
-            tvNote.setTextColor(0xFF888888.toInt())
-            tvNote.textSize = 16f
+            tvIcon?.text = "⏰"
+            tvNote?.text = note
+            tvNote?.visibility = android.view.View.VISIBLE
+            tvNote?.setTextColor(0xFF888888.toInt())
+            tvNote?.textSize = 16f
         } else {
-            tvIcon.text = "⏰"
-            tvNote.visibility = android.view.View.GONE
+            tvIcon?.text = "⏰"
+            tvNote?.visibility = android.view.View.GONE
         }
 
         val now = java.text.SimpleDateFormat("HH:mm", java.util.Locale.CHINA).format(java.util.Date())
-        findViewById<TextView>(R.id.tvAlarmTime).text = now
+        tvTime?.text = now
 
-        // ── Simple tap to close ──
-        val btnDismiss = findViewById<Button>(R.id.btnDismiss)
-        btnDismiss.setOnClickListener {
-            performDismiss(alarmId, medicineName, isTest)
+        // Dismiss button
+        btnDismiss?.setOnClickListener {
+            performDismiss(alarmId, isTest)
         }
 
+        // Snooze button
         val prefs = getSharedPreferences("pixso_ui_alarm_state", Context.MODE_PRIVATE)
         val snoozeEnabled = prefs.getBoolean("snoozeEnabled", true)
-        val snoozeMinutes = prefs.getInt("snoozeMinutes", 5)
-
-        val btnSnooze = findViewById<Button>(R.id.btnSnooze)
-        btnSnooze.visibility = if (isTest || !snoozeEnabled) android.view.View.GONE else android.view.View.VISIBLE
+        val snoozeMinutes = prefs.getInt("snoozeMinutes", 5).coerceIn(1, 30)
         val snoozeMs = snoozeMinutes * 60 * 1000L
-        btnSnooze.text = "${snoozeMinutes}分钟后再提醒"
 
-        btnSnooze.setOnClickListener {
+        btnSnooze?.visibility = if (isTest || !snoozeEnabled) android.view.View.GONE else android.view.View.VISIBLE
+        btnSnooze?.text = "${snoozeMinutes}分钟后再提醒"
+        btnSnooze?.setOnClickListener {
             alarmId?.let { id ->
                 AlarmScheduler.scheduleSnooze(this, id, System.currentTimeMillis() + snoozeMs)
             }
@@ -81,7 +93,7 @@ class AlarmRingingActivity : AppCompatActivity() {
         }
     }
 
-    private fun performDismiss(alarmId: String?, medicineName: String, isTest: Boolean) {
+    private fun performDismiss(alarmId: String?, isTest: Boolean) {
         AlarmService.stop(this, shouldReschedule = !isTest && !alarmId.isNullOrEmpty())
         finish()
     }
@@ -99,6 +111,7 @@ class AlarmRingingActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         applyLockScreenWindowFlags()
+        refreshUI()
     }
 
     private fun applyLockScreenWindowFlags() {
@@ -114,17 +127,21 @@ class AlarmRingingActivity : AppCompatActivity() {
                 // KeyGuard 请求失败不应影响基本功能
                 android.util.Log.w("AlarmRingingActivity", "KeyGuard request failed: ${e.message}")
             }
+        } else {
+            // Deprecated flags — only on API < 27 (modern flags used above on API 27+)
+            @Suppress("DEPRECATION")
+            window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
+            @Suppress("DEPRECATION")
+            window.addFlags(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            @Suppress("DEPRECATION")
+            window.addFlags(WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON)
+            @Suppress("DEPRECATION")
+            window.addFlags(WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD)
         }
 
         @Suppress("DEPRECATION")
-        window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
-        @Suppress("DEPRECATION")
-        window.addFlags(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        @Suppress("DEPRECATION")
-        window.addFlags(WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON)
-        @Suppress("DEPRECATION")
-        window.addFlags(WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD)
         window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
     }
 }

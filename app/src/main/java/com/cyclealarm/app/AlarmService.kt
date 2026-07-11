@@ -137,7 +137,7 @@ class AlarmService : Service() {
             acquire(15 * 1000L)
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification(label, note, alarmId, isTest))
+        startForeground(NOTIFICATION_ID, buildNotification(label, note, medicineName, alarmId, isTest))
 
         val ringingIntent = Intent(this, AlarmRingingActivity::class.java).apply {
             putExtra(EXTRA_LABEL, label)
@@ -197,13 +197,13 @@ class AlarmService : Service() {
     private var medicineCycleHandler: Handler? = null
     private var medicineCycleRunning = false
 
-    /** Simple medicine cycle: 5s ringtone → 3× voice → repeat */
+    /** Medicine voice cycle: play bundled audio (3× built-in) → 5s silence → repeat */
     private fun startMedicineVoiceCycle(name: String) {
         medicineCycleRunning = true
         medicineCycleHandler = Handler(Looper.getMainLooper())
         currentMedName = name
-        // 直接播放内置语音，3次循环
-        playBundledVoice(3)
+        // 音频文件本身已含3遍播报，只播1次即可
+        playBundledVoice(1)
     }
 
     private fun playBundledVoice(count: Int) {
@@ -212,6 +212,7 @@ class AlarmService : Service() {
         try {
             // Release old player
             try { medicineVoicePlayer?.release() } catch (_: Exception) {}
+            medicineVoicePlayer = null
 
             val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
             val resId = when (hour) {
@@ -220,43 +221,47 @@ class AlarmService : Service() {
                 else -> R.raw.med_evening
             }
 
-            medicineVoicePlayer = MediaPlayer().apply {
+            // Save reference before apply() so we can release on failure (avoids native leak)
+            val newPlayer = MediaPlayer()
+            medicineVoicePlayer = newPlayer.apply {
                 setAudioAttributes(AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_ALARM)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build())
                 setDataSource(this@AlarmService, Uri.parse("android.resource://${packageName}/$resId"))
 
-                // 如果只播放一次，5秒后进入下一轮
                 if (count == 1) {
                     setOnCompletionListener {
                         medicineCycleHandler?.postDelayed({
                             if (medicineCycleRunning) {
-                                playBundledVoice(3)
+                                playBundledVoice(1)
                             }
                         }, 5000L)
                     }
-                }
-                // 如果需要多次播放
-                else {
+                } else {
                     var playedCount = 0
                     setOnCompletionListener { player ->
                         playedCount++
                         if (playedCount < count) {
-                            player.start() // 继续播放
+                            if (medicineCycleRunning) {
+                                player.start() // 继续播放
+                            }
                         } else {
                             // 播放完成，5秒后进入下一轮
                             medicineCycleHandler?.postDelayed({
                                 if (medicineCycleRunning) {
-                                    playBundledVoice(3)
+                                    playBundledVoice(1)
                                 }
                             }, 5000L)
                         }
                     }
-                    prepare(); start()
                 }
+                prepare(); start()
             }
         } catch (e: Exception) {
+            // Release the player that failed to initialize to avoid native leak
+            try { medicineVoicePlayer?.release() } catch (_: Exception) {}
+            medicineVoicePlayer = null
             // 如果内置语音播放失败，等待5秒后重试
             medicineCycleHandler?.postDelayed({
                 if (medicineCycleRunning) {
@@ -264,63 +269,6 @@ class AlarmService : Service() {
                 }
             }, 5000L)
         }
-    }
-
-    private fun speakWithBundledVoice() {
-        // 保持向后兼容性，默认播放3次
-        playBundledVoice(3)
-    }
-
-    private fun playMedicineFallbackBeep() { speakWithBundledVoice() }
-    private fun speakMedicineName(name: String) { startMedicineVoiceCycle(name) }
-
-    /** Music-box style chime: C5→E5→G5→C6 ascending arpeggio, warm & pleasant */
-    private fun playMedicineChime() {
-        try {
-            val sampleRate = 44100
-            val noteLen = sampleRate * 180 / 1000  // 180ms per note
-            val gapLen = sampleRate * 60 / 1000     // 60ms gap between notes
-            val totalSamples = (noteLen + gapLen) * 4
-            val buffer = ShortArray(totalSamples)
-
-            val freqs = intArrayOf(523, 659, 784, 1047) // C5 E5 G5 C6
-
-            for (n in freqs.indices) {
-                val offset = n * (noteLen + gapLen)
-                for (i in 0 until noteLen) {
-                    val pos = offset + i
-                    if (pos >= totalSamples) break
-                    val t = i.toDouble() / sampleRate
-                    // Bell-like envelope: fast attack, gentle decay
-                    val envelope = Math.exp(-t * 5.0) * 0.7
-                    // Add a second overtone for warmth (octave up, quieter)
-                    val fundamental = Math.sin(2.0 * Math.PI * freqs[n] * t)
-                    val overtone = Math.sin(2.0 * Math.PI * freqs[n] * 2 * t) * 0.15
-                    val sample = ((fundamental + overtone) * 16384 * envelope).toInt().toShort()
-                    buffer[pos] = sample
-                }
-            }
-
-            val track = android.media.AudioTrack(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build(),
-                android.media.AudioFormat.Builder()
-                    .setSampleRate(sampleRate)
-                    .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
-                    .build(),
-                totalSamples * 2,
-                android.media.AudioTrack.MODE_STATIC,
-                0
-            )
-            track.write(buffer, 0, totalSamples)
-            track.play()
-            medicineCycleHandler?.postDelayed({
-                try { track.release() } catch (_: Exception) {}
-            }, 1200L)
-        } catch (_: Exception) {}
     }
 
     private fun startRingtone(ringtonePath: String?) {
@@ -339,8 +287,10 @@ class AlarmService : Service() {
         }
 
         for (uri in candidates) {
+            // Save reference before apply() so we can release on failure (avoids native leak)
+            val mp = MediaPlayer()
             try {
-                mediaPlayer = MediaPlayer().apply {
+                mediaPlayer = mp.apply {
                     setAudioAttributes(
                         AudioAttributes.Builder()
                             .setUsage(AudioAttributes.USAGE_ALARM)
@@ -357,9 +307,8 @@ class AlarmService : Service() {
                 }
                 return
             } catch (e: Exception) {
-                try {
-                    mediaPlayer?.release()
-                } catch (_: Exception) {}
+                try { mp.release() } catch (_: Exception) {}
+                try { mediaPlayer?.release() } catch (_: Exception) {}
                 mediaPlayer = null
                 e.printStackTrace()
             }
@@ -478,6 +427,7 @@ class AlarmService : Service() {
     private fun buildNotification(
         label: String,
         note: String,
+        medicineName: String,
         alarmId: String?,
         isTest: Boolean
     ): Notification {
@@ -492,6 +442,7 @@ class AlarmService : Service() {
         val launchIntent = Intent(this, AlarmRingingActivity::class.java).apply {
             putExtra(EXTRA_LABEL, label)
             putExtra(EXTRA_NOTE, note)
+            putExtra(EXTRA_MEDICINE_NAME, medicineName)
             putExtra(EXTRA_IS_TEST, isTest)
             if (alarmId != null) putExtra(EXTRA_ALARM_ID, alarmId)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
