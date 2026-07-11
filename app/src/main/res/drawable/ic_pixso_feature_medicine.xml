@@ -4,14 +4,8 @@
     android:viewportWidth="48"
     android:viewportHeight="48">
     <path android:fillColor="#FFF0F5" android:pathData="M14,0L34,0Q48,0 48,14L48,34Q48,48 34,48L14,48Q0,48 0,34L0,14Q0,0 14,0Z" />
-    <!-- Capsule body -->
-    <path android:pathData="M16,24L32,24A8,8 0,0,1 32,32L16,32A8,8 0,0,1 16,24Z"
+    <!-- Hollow medical cross, symmetric -->
+    <path android:pathData="M21,15L27,15L27,21L33,21L33,27L27,27L27,33L21,33L21,27L15,27L15,21L21,21Z"
         android:strokeColor="#E8658D" android:strokeWidth="2.5" android:fillColor="@android:color/transparent"
         android:strokeLineCap="round" android:strokeLineJoin="round" />
-    <!-- Capsule left cap -->
-    <path android:pathData="M16,24A8,8 0,1,1 16,32"
-        android:fillColor="#E8658D" android:fillAlpha="0.2" android:strokeColor="#E8658D" android:strokeWidth="2.5" />
-    <!-- Plus sign -->
-    <path android:pathData="M22,28L26,28M24,26L24,30"
-        android:strokeColor="#E8658D" android:strokeWidth="2" android:strokeLineCap="round" />
 </vector>
