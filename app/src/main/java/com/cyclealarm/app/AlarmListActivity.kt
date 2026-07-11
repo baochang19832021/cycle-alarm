@@ -1966,7 +1966,7 @@ class AlarmListActivity : AppCompatActivity() {
                 setTextColor(when {
                     header && weekend -> 0xFFFF7A59.toInt()
                     header -> 0xFF64748B.toInt()
-                    rest -> 0xFFFF8A70.toInt()
+                    rest -> 0xFF111827.toInt()
                     weekend -> 0xFFE8795E.toInt()
                     else -> 0xFF111827.toInt()
                 })
@@ -2825,10 +2825,20 @@ class AlarmListActivity : AppCompatActivity() {
     private fun updateCardCheckbox(instanceId: String) {
         val card = alarmCardViews[instanceId] as? ViewGroup ?: return
         val checked = instanceId in checkedInstanceIds
-        val topLayer = card.getChildAt(0) as? ViewGroup ?: return
-        val top = topLayer.getChildAt(0) as? LinearLayout ?: return
-        // In delete mode, top has [title, checkbox] at indices 0 and 1
-        val checkbox = top.getChildAt(1) as? TextView ?: return
+
+        // 安全地查找复选框
+        val checkbox = when {
+            card.childCount >= 1 -> {
+                val topLayer = card.getChildAt(0) as? ViewGroup ?: return
+                if (topLayer.childCount >= 1) {
+                    val top = topLayer.getChildAt(0) as? LinearLayout ?: return
+                    // In delete mode, top has [title, checkbox] at indices 0 and 1
+                    if (top.childCount >= 2) top.getChildAt(1) as? TextView else null
+                } else null
+            }
+            else -> null
+        } ?: return
+
         checkbox.text = if (checked) "✓" else ""
         val bg = if (checked) 0xFF4A6CF7.toInt() else 0x00FFFFFF
         val border = if (checked) 0xFF4A6CF7.toInt() else 0xFFCBD5E1.toInt()

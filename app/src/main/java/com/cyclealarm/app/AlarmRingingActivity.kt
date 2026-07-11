@@ -105,8 +105,15 @@ class AlarmRingingActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
-            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-            keyguardManager.requestDismissKeyguard(this, null)
+            try {
+                val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+                if (keyguardManager.isDeviceLocked) {
+                    keyguardManager.requestDismissKeyguard(this, null)
+                }
+            } catch (e: Exception) {
+                // KeyGuard 请求失败不应影响基本功能
+                android.util.Log.w("AlarmRingingActivity", "KeyGuard request failed: ${e.message}")
+            }
         }
 
         @Suppress("DEPRECATION")

@@ -23,8 +23,6 @@ import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import android.telephony.PhoneStateListener
 import android.telephony.TelephonyManager
 import androidx.core.app.NotificationCompat
@@ -89,7 +87,6 @@ class AlarmService : Service() {
     private var currentAlarmId: String? = null
     private var currentIsTest: Boolean = false
     private var currentMedName: String = ""
-    private var tts: TextToSpeech? = null
     private var medicineVoicePlayer: MediaPlayer? = null
     private var audioManager: AudioManager? = null
     private var volumeHandler: Handler? = null
@@ -204,85 +201,74 @@ class AlarmService : Service() {
     private fun startMedicineVoiceCycle(name: String) {
         medicineCycleRunning = true
         medicineCycleHandler = Handler(Looper.getMainLooper())
-        runMedicineCycle(name)
+        currentMedName = name
+        // 直接播放内置语音，3次循环
+        playBundledVoice(3)
     }
 
-    private fun runMedicineCycle(name: String) {
+    private fun playBundledVoice(count: Int) {
         if (!medicineCycleRunning) return
 
-        // Phase: speak 3× voice immediately
-        if (name.isNotEmpty()) {
-            speakWithTts(name)
-        } else {
-            speakWithBundledVoice()
-        }
-    }
-
-    private fun onVoicePhaseDone() {
-        // Wait 5 seconds, then repeat voice cycle
-        if (!medicineCycleRunning) return
-        medicineCycleHandler?.postDelayed({
-            runMedicineCycle(currentMedName)
-        }, 5000L)
-    }
-
-    private fun speakWithTts(name: String) {
-        // Release previous TTS instance to avoid resource exhaustion
-        try { tts?.shutdown() } catch (_: Exception) {}
-        tts = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                tts?.setAudioAttributes(AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build())
-                val langResult = tts?.setLanguage(java.util.Locale.CHINESE) ?: TextToSpeech.LANG_MISSING_DATA
-                if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    try { tts?.shutdown() } catch (_: Exception) {}
-                    speakWithBundledVoice(); return@TextToSpeech
-                }
-                // Speak 3 times continuously as one utterance
-                val text = "该吃${name}了！该吃${name}了！该吃${name}了！"
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                        override fun onDone(id: String?) = onVoicePhaseDone()
-                        @Deprecated("Deprecated in Java")
-                        override fun onError(id: String?) = onVoicePhaseDone()
-                        override fun onStart(id: String?) {}
-                    })
-                    tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "med_${System.currentTimeMillis()}")
-                } else {
-                    @Suppress("DEPRECATION")
-                    tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null)
-                    medicineCycleHandler?.postDelayed({ onVoicePhaseDone() }, 6000L)
-                }
-            } else {
-                try { tts?.shutdown() } catch (_: Exception) {}
-                speakWithBundledVoice()
-            }
-        }
-    }
-
-    private fun speakWithBundledVoice() {
         try {
             // Release old player
             try { medicineVoicePlayer?.release() } catch (_: Exception) {}
+
             val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
             val resId = when (hour) {
                 in 5..11 -> R.raw.med_morning
                 in 12..17 -> R.raw.med_noon
                 else -> R.raw.med_evening
             }
+
             medicineVoicePlayer = MediaPlayer().apply {
                 setAudioAttributes(AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_ALARM)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build())
                 setDataSource(this@AlarmService, Uri.parse("android.resource://${packageName}/$resId"))
-                setOnCompletionListener { onVoicePhaseDone() }
-                setOnErrorListener { _, _, _ -> onVoicePhaseDone(); true }
-                prepare(); start()
+
+                // 如果只播放一次，5秒后进入下一轮
+                if (count == 1) {
+                    setOnCompletionListener {
+                        medicineCycleHandler?.postDelayed({
+                            if (medicineCycleRunning) {
+                                playBundledVoice(3)
+                            }
+                        }, 5000L)
+                    }
+                }
+                // 如果需要多次播放
+                else {
+                    var playedCount = 0
+                    setOnCompletionListener { player ->
+                        playedCount++
+                        if (playedCount < count) {
+                            player.start() // 继续播放
+                        } else {
+                            // 播放完成，5秒后进入下一轮
+                            medicineCycleHandler?.postDelayed({
+                                if (medicineCycleRunning) {
+                                    playBundledVoice(3)
+                                }
+                            }, 5000L)
+                        }
+                    }
+                    prepare(); start()
+                }
             }
-        } catch (_: Exception) { onVoicePhaseDone() }
+        } catch (e: Exception) {
+            // 如果内置语音播放失败，等待5秒后重试
+            medicineCycleHandler?.postDelayed({
+                if (medicineCycleRunning) {
+                    playBundledVoice(count)
+                }
+            }, 5000L)
+        }
+    }
+
+    private fun speakWithBundledVoice() {
+        // 保持向后兼容性，默认播放3次
+        playBundledVoice(3)
     }
 
     private fun playMedicineFallbackBeep() { speakWithBundledVoice() }
@@ -608,11 +594,6 @@ class AlarmService : Service() {
             screenWakeLock = null
         } catch (_: Exception) {}
 
-        try {
-            tts?.stop()
-            tts?.shutdown()
-            tts = null
-        } catch (_: Exception) {}
 
         try {
             volumeRunnable?.let { volumeHandler?.removeCallbacks(it) }
